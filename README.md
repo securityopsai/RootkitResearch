@@ -1,3 +1,4 @@
+To Be used for learning only. Not malware grade detection stuff.
 # Understanding Modern Linux Rootkits: From LKM to eBPF
 
 Let's dive into how modern Linux rootkits work, particularly focusing on the shift from traditional LKM (Loadable Kernel Module) rootkits to the newer eBPF-based threats. This stuff gets pretty deep into kernel internals, so I'll break it down piece by piece.
