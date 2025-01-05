@@ -357,10 +357,9 @@ Let's look at some specialized tools for rootkit detection. I'll break down what
 # Installation from GitHub
 git clone https://github.com/sandflysecurity/sandfly-processdecloak.git
 cd sandfly-processdecloak
-make
 
 # Usage
-sudo ./processdecloak
+sudo python ./processdecloak.py
 ```
 What makes this tool special:
 - Uses multiple methods to find hidden processes
@@ -373,11 +372,10 @@ What makes this tool special:
 ```bash
 # Installation
 git clone https://github.com/sandflysecurity/sandfly-filedecloak.git
-cd sandfly-filedecloak
-make
+cd sandfly-filedecloak 
 
 # Usage
-sudo ./filedecloak /path/to/check
+sudo python ./filedecloak /path/to/check
 ```
 Key features:
 - Finds files hidden by rootkits
@@ -489,29 +487,7 @@ sudo ossec-control start
 sudo auditd -f # For audit daemon
 ```
 
-4. Custom Integration Script:
-```bash
-#!/bin/bash
-# Save as rootkit_check.sh
 
-echo "=== Process Check ==="
-sudo processdecloak
-
-echo "=== File System Check ==="
-sudo filedecloak /
-
-echo "=== Kernel Module Check ==="
-lsmod | while read -r mod others; do
-    echo "Checking $mod"
-    modinfo "$mod" | grep -E "filename|version|description"
-done
-
-echo "=== System Call Table Check ==="
-sudo cat /proc/kallsyms | grep sys_call_table
-
-echo "=== eBPF Program Check ==="
-sudo bpftool prog list
-```
 
 ## Further Reading
 
