@@ -41,17 +41,17 @@ Low Memory ─────► │   User Space       │
 
 The Linux kernel's memory space is strictly segregated from user space, with several key regions:
 
-1. **Kernel Text Segment** (0xffffffff80000000 - 0xffffffffa0000000)
+1. **Kernel Text Segment** 
    - Contains core kernel code
    - Read-only after boot
    - Primary target for rootkit hooks
 
-2. **Kernel Data** (0xffffffffa0000000 - 0xffffffffc0000000)
+2. **Kernel Data** 
    - Runtime kernel data structures
    - Writable memory region
    - Common location for rootkit modifications
 
-3. **Module Space** (0xffffffffc0000000 - 0xffffffffc0000000)
+3. **Module Space** 
    - Loadable kernel modules
    - Dynamic code execution area
    - Preferred location for LKM rootkits
