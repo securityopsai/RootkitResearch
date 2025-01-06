@@ -200,7 +200,7 @@ Let's get deeper into memory forensics. Here's a more comprehensive approach:
 
 ```bash
 # Create a full memory dump
-sudo dd if=/dev/mem of=/tmp/memdump bs=1M count=1024
+sudo dd if=/dev/mem of=/tmp/memdump bs=1M count=1024 - this will fail in production use LIME
 
 # Look for hidden processes
 sudo volatility -f /tmp/memdump linux_pslist
