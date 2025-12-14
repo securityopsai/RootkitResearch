@@ -354,13 +354,13 @@ Let's look at some specialized tools for rootkit detection. I'll break down what
 
 1. Process Decloak (Sand Fly Security):
 ```bash
-# Installation from GitHub
+# Installation from GitHub (requires Go 1.20+)
 git clone https://github.com/sandflysecurity/sandfly-processdecloak.git
 cd sandfly-processdecloak
-
+go build -o processdecloak
 
 # Usage
-sudo python ./processdecloak.py
+sudo ./processdecloak
 ```
 What makes this tool special:
 - Uses multiple methods to find hidden processes
@@ -371,12 +371,13 @@ What makes this tool special:
 
 2. File Decloak (Sand Fly Security):
 ```bash
-# Installation
+# Installation (requires Go 1.20+)
 git clone https://github.com/sandflysecurity/sandfly-filedecloak.git
-cd sandfly-filedecloak 
+cd sandfly-filedecloak
+go build -o filedecloak
 
 # Usage
-sudo python ./filedecloak /path/to/check
+sudo ./filedecloak /path/to/check
 ```
 Key features:
 - Finds files hidden by rootkits

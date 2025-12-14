@@ -51,7 +51,7 @@ The Linux kernel's memory space is strictly segregated from user space, with sev
    - Writable memory region
    - Common location for rootkit modifications
 
-3. **Module Space** (0xffffffffc0000000 - 0xffffffffc0000000)
+3. **Module Space** (0xffffffffc0000000 - 0xffffffffff000000)
    - Loadable kernel modules
    - Dynamic code execution area
    - Preferred location for LKM rootkits
@@ -199,6 +199,8 @@ Let's get deeper into memory forensics. Here's a more comprehensive approach:
 
 ```bash
 # Create a full memory dump
+# NOTE: This command will FAIL on modern systems with kernel lockdown or Secure Boot.
+# Use LiME or AVML instead for memory acquisition on hardened systems.
 sudo dd if=/dev/mem of=/tmp/memdump bs=1M count=1024
 
 # Look for hidden processes
@@ -267,8 +269,8 @@ Here's how to create and analyze a detailed filesystem timeline:
 sudo fls -m / -r /dev/sda1 > filesystem.csv
 mactime -b filesystem.csv > timeline.txt
 
-# Look for suspicious patterns
-grep "2023-12-" timeline.txt | grep -E "execute|modify"
+# Look for suspicious patterns (use dynamic date range)
+grep "$(date +%Y)-" timeline.txt | grep -E "execute|modify"
 grep -E "insmod|rmmod" timeline.txt
 
 # Track file changes

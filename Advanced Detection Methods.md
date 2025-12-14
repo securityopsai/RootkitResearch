@@ -17,9 +17,9 @@ sestatus  # SELinux should be enforcing
 
 Required tools and security setup:
 ```bash
-# Install dependencies with versions pinned
+# Install dependencies
 sudo apt-get update && sudo apt-get install -y \
-    build-essential="12.9" \
+    build-essential \
     linux-headers-$(uname -r) \
     python3-pip \
     python3-dev \
@@ -214,7 +214,7 @@ check_security_prereqs() {
     if [[ $EUID -ne 0 ]]; then
         echo "ERROR: Must run as root"
         exit 1
-    }
+    fi
 
     # Check SELinux/AppArmor
     if command -v getenforce >/dev/null 2>&1; then
@@ -389,11 +389,12 @@ check_environment() {
         fi
     fi
 
-    # Check kernel version
+    # Check kernel version (requires 5.8+)
     local kernel_version
     kernel_version=$(uname -r | cut -d. -f1,2)
-    if (( $(echo "$kernel_version < 5.8" | bc -l) )); then
-        echo "ERROR: Requires Linux kernel 5.8 or newer"
+    local min_version="5.8"
+    if [[ "$(printf '%s\n' "$min_version" "$kernel_version" | sort -V | head -n1)" != "$min_version" ]]; then
+        echo "ERROR: Requires Linux kernel 5.8 or newer (found $kernel_version)"
         exit 1
     fi
 
@@ -592,11 +593,12 @@ check_security_env() {
         fi
     fi
 
-    # Check kernel version and features
+    # Check kernel version and features (requires 5.8+)
     local kernel_version
     kernel_version=$(uname -r | cut -d. -f1,2)
-    if (( $(echo "$kernel_version < 5.8" | bc -l) )); then
-        echo "ERROR: Requires Linux kernel 5.8 or newer"
+    local min_version="5.8"
+    if [[ "$(printf '%s\n' "$min_version" "$kernel_version" | sort -V | head -n1)" != "$min_version" ]]; then
+        echo "ERROR: Requires Linux kernel 5.8 or newer (found $kernel_version)"
         exit 1
     fi
 
@@ -913,16 +915,16 @@ get_processes() {
 # Compare process listings
 compare_processes() {
     echo "Comparing process listings..."
-    
-    for pid in $(cat /tmp/procs_procfs); do
-        if ! grep -q "^$pid$" /tmp/procs_ps; then
+
+    for pid in $(cat "$TEMP_DIR/procs_procfs"); do
+        if ! grep -q "^$pid$" "$TEMP_DIR/procs_ps"; then
             echo "[ALERT] PID $pid exists in procfs but not in ps output"
             analyze_suspicious_process "$pid"
         fi
     done
-    
-    for pid in $(cat /tmp/procs_netlink 2>/dev/null); do
-        if ! grep -q "^$pid$" /tmp/procs_procfs; then
+
+    for pid in $(cat "$TEMP_DIR/procs_netlink" 2>/dev/null); do
+        if ! grep -q "^$pid$" "$TEMP_DIR/procs_procfs"; then
             echo "[ALERT] PID $pid exists in netlink but not in procfs"
             analyze_suspicious_process "$pid"
         fi
@@ -955,33 +957,33 @@ analyze_suspicious_process() {
 # File system analysis
 analyze_filesystem() {
     echo "Analyzing filesystem for hidden files..."
-    
+
     # Method 1: Compare directory listings
     for dir in /proc /sys /dev; do
         echo "Checking $dir..."
-        
+
         # Get listings using different methods
-        ls -la "$dir" > /tmp/ls_output
-        find "$dir" -maxdepth 1 > /tmp/find_output
-        
+        ls -la "$dir" > "$TEMP_DIR/ls_output"
+        find "$dir" -maxdepth 1 > "$TEMP_DIR/find_output"
+
         # Compare outputs
-        if ! diff <(sort /tmp/ls_output) <(sort /tmp/find_output) >/dev/null; then
+        if ! diff <(sort "$TEMP_DIR/ls_output") <(sort "$TEMP_DIR/find_output") >/dev/null; then
             echo "[ALERT] Discrepancy found in $dir listings"
-            diff <(sort /tmp/ls_output) <(sort /tmp/find_output)
+            diff <(sort "$TEMP_DIR/ls_output") <(sort "$TEMP_DIR/find_output")
         fi
     done
-    
+
     # Method 2: Check for suspicious file attributes
     echo "Checking for suspicious file attributes..."
     lsattr -R / 2>/dev/null | grep -E '^[-a-zA-Z]{4}i' || true
-    
+
     # Method 3: Check for files with no links
     find / -type f -links 0 2>/dev/null
 }
 
 # Cleanup
 cleanup() {
-    rm -f /tmp/procs_* /tmp/ls_output /tmp/find_output
+    rm -rf "$TEMP_DIR"
 }
 
 # Main execution
