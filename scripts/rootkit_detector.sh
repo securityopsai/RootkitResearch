@@ -34,6 +34,86 @@ FULL_SCAN=false
 # Detect architecture
 ARCH=$(uname -m)
 
+# Known security/observability tooling (reduces false positive noise)
+KNOWN_TOOLING=""
+detect_known_tooling() {
+    local found=()
+    # Check for common eBPF-based security/networking tools
+    command -v cilium &>/dev/null && found+=("cilium")
+    command -v tetragon &>/dev/null && found+=("tetragon")
+    pgrep -x falco &>/dev/null && found+=("falco")
+    pgrep -x osqueryd &>/dev/null && found+=("osquery")
+    pgrep -x datadog-agent &>/dev/null && found+=("datadog")
+    systemctl is-active --quiet crowdstrike-falcon-sensor 2>/dev/null && found+=("crowdstrike")
+    [[ -d "/opt/carbonblack" ]] && found+=("carbonblack")
+    # Container networking
+    [[ -d "/run/cilium" ]] && found+=("cilium-cni")
+    [[ -d "/run/calico" ]] && found+=("calico")
+
+    if [[ ${#found[@]} -gt 0 ]]; then
+        KNOWN_TOOLING="${found[*]}"
+    fi
+}
+
+# Collect evidence for a suspicious finding
+collect_evidence() {
+    local type="$1"  # process, module, ebpf, file
+    local id="$2"    # PID, module name, prog ID, path
+
+    [[ "$FULL_SCAN" != "true" ]] && return
+
+    log_info "  --- Evidence Bundle ---"
+    case "$type" in
+        process)
+            local pid="$id"
+            [[ -d "/proc/$pid" ]] || return
+            log_info "  exe: $(readlink -f /proc/$pid/exe 2>/dev/null || echo 'unreadable')"
+            log_info "  cmdline: $(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null | head -c 200)"
+            log_info "  cwd: $(readlink -f /proc/$pid/cwd 2>/dev/null || echo 'unreadable')"
+            log_info "  uid: $(awk '/^Uid:/{print $2}' /proc/$pid/status 2>/dev/null)"
+            log_info "  cgroup: $(head -1 /proc/$pid/cgroup 2>/dev/null)"
+            # Hash the binary if possible
+            local exe_path
+            exe_path=$(readlink -f /proc/$pid/exe 2>/dev/null)
+            if [[ -f "$exe_path" ]] && command -v sha256sum &>/dev/null; then
+                log_info "  sha256: $(sha256sum "$exe_path" 2>/dev/null | awk '{print $1}')"
+            fi
+            ;;
+        module)
+            local mod="$id"
+            log_info "  modinfo: $(modinfo "$mod" 2>/dev/null | grep -E '^(filename|version|author|description):' | tr '\n' ' ')"
+            if [[ -d "/sys/module/$mod/sections" ]]; then
+                log_info "  sections: $(ls /sys/module/$mod/sections/ 2>/dev/null | tr '\n' ' ')"
+            fi
+            ;;
+        ebpf)
+            local prog_id="$id"
+            if command -v bpftool &>/dev/null; then
+                log_info "  prog details: $(bpftool prog show id "$prog_id" 2>/dev/null | head -3 | tr '\n' ' ')"
+            fi
+            ;;
+        file)
+            local path="$id"
+            [[ -e "$path" ]] || return
+            log_info "  stat: $(stat -c '%A %U:%G %s %y' "$path" 2>/dev/null)"
+            if command -v sha256sum &>/dev/null && [[ -f "$path" ]]; then
+                log_info "  sha256: $(sha256sum "$path" 2>/dev/null | awk '{print $1}')"
+            fi
+            # Try to find package owner
+            if command -v dpkg &>/dev/null; then
+                local pkg
+                pkg=$(dpkg -S "$path" 2>/dev/null | cut -d: -f1)
+                [[ -n "$pkg" ]] && log_info "  package: $pkg"
+            elif command -v rpm &>/dev/null; then
+                local pkg
+                pkg=$(rpm -qf "$path" 2>/dev/null)
+                [[ -n "$pkg" ]] && log_info "  package: $pkg"
+            fi
+            ;;
+    esac
+    log_info "  --- End Evidence ---"
+}
+
 # Logging functions - use arithmetic that won't return exit status 1
 log_alert() {
     ALERTS=$((ALERTS + 1))
@@ -120,6 +200,13 @@ echo "====================================================="
 IS_ROOT=true
 check_root || IS_ROOT=false
 
+# Detect known security tooling
+detect_known_tooling
+if [[ -n "$KNOWN_TOOLING" ]]; then
+    echo "Detected tooling: $KNOWN_TOOLING"
+    echo "(eBPF/kprobe findings from these tools are expected)"
+fi
+
 ###############################################################################
 # 1. PROCESS HIDING DETECTION
 ###############################################################################
@@ -133,35 +220,45 @@ check_hidden_processes() {
         TEMP_DIR=$(mktemp -d)
         trap 'rm -rf -- "$TEMP_DIR"' EXIT
 
-        # Method 1: /proc filesystem - take snapshot quickly
-        find /proc -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null | \
-            sed 's|/proc/||' | sort -n > "$TEMP_DIR/proc_pids"
+        # Take multiple samples to reduce race condition false positives
+        local samples=3
+        local delay=0.1
 
-        # Method 2: ps command - immediately after
-        ps -eo pid= 2>/dev/null | tr -d ' ' | sort -n > "$TEMP_DIR/ps_pids"
+        for i in $(seq 1 $samples); do
+            find /proc -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null | \
+                sed 's|/proc/||' | sort -n > "$TEMP_DIR/proc_pids_$i"
+            ps -eo pid= 2>/dev/null | tr -d ' ' | sort -n > "$TEMP_DIR/ps_pids_$i"
+            sleep "$delay" 2>/dev/null || true
+        done
 
-        # Compare - but note: PIDs can legitimately vanish between reads
-        local hidden_count=0
+        # Find PIDs that are consistently in /proc but not in ps across all samples
         local proc_count
-        proc_count=$(wc -l < "$TEMP_DIR/proc_pids")
+        proc_count=$(wc -l < "$TEMP_DIR/proc_pids_1")
+        local hidden_count=0
 
         while read -r pid; do
             [[ -z "$pid" ]] && continue
-            if ! grep -qx "$pid" "$TEMP_DIR/ps_pids" 2>/dev/null; then
-                # Verify PID still exists (race condition check)
-                if [[ -d "/proc/$pid" ]]; then
-                    local comm="unknown"
-                    comm=$(cat "/proc/$pid/comm" 2>/dev/null) || comm="unknown"
-                    log_alert "Possible hidden process: PID $pid ($comm) - in /proc but not ps"
-                    hidden_count=$((hidden_count + 1))
+
+            # Check if this PID is missing from ps in ALL samples
+            local missing_count=0
+            for i in $(seq 1 $samples); do
+                if ! grep -qx "$pid" "$TEMP_DIR/ps_pids_$i" 2>/dev/null; then
+                    missing_count=$((missing_count + 1))
                 fi
+            done
+
+            # Only alert if consistently hidden AND still exists
+            if [[ $missing_count -eq $samples ]] && [[ -d "/proc/$pid" ]]; then
+                local comm="unknown"
+                comm=$(cat "/proc/$pid/comm" 2>/dev/null) || comm="unknown"
+                log_alert "Hidden process: PID $pid ($comm) - consistently in /proc but not ps"
+                collect_evidence process "$pid"
+                hidden_count=$((hidden_count + 1))
             fi
-        done < "$TEMP_DIR/proc_pids"
+        done < "$TEMP_DIR/proc_pids_1"
 
         if [[ $hidden_count -eq 0 ]]; then
-            log_ok "No hidden processes detected ($proc_count processes checked)"
-        else
-            log_info "NOTE: Single discrepancies may be race conditions. Persistent ones are suspicious."
+            log_ok "No hidden processes detected ($proc_count PIDs, $samples samples)"
         fi
 
         # cgroup check - but note namespace visibility issues
@@ -171,13 +268,11 @@ check_hidden_processes() {
             find /sys/fs/cgroup -name "cgroup.procs" 2>/dev/null | head -100 | \
                 xargs cat 2>/dev/null | sort -u > "$TEMP_DIR/cgroup_pids" || true
 
-            local cgroup_hidden=0
             while read -r pid; do
                 [[ -z "$pid" ]] && continue
-                if [[ -n "$pid" ]] && ! grep -qx "$pid" "$TEMP_DIR/proc_pids" 2>/dev/null; then
-                    # Could be namespace visibility - don't alert hard
-                    log_warning "PID $pid in cgroups but not in /proc (may be namespace issue)"
-                    cgroup_hidden=$((cgroup_hidden + 1))
+                if [[ -n "$pid" ]] && ! grep -qx "$pid" "$TEMP_DIR/proc_pids_1" 2>/dev/null; then
+                    # Could be namespace visibility - INFO not WARNING
+                    log_info "PID $pid in cgroups but not in /proc (likely namespace visibility)"
                 fi
             done < "$TEMP_DIR/cgroup_pids"
         fi
@@ -249,29 +344,51 @@ check_ebpf_json() {
     prog_data=$(bpftool prog list -j 2>/dev/null) || return
 
     local prog_count
-    prog_count=$(echo "$prog_data" | jq 'length') || prog_count=0
+    prog_count=$(echo "$prog_data" | jq -e 'length' 2>/dev/null) || prog_count=0
     log_info "Total eBPF programs loaded: $prog_count"
 
-    # Check each program with attribution
-    echo "$prog_data" | jq -c '.[]' 2>/dev/null | while read -r prog; do
-        local prog_id prog_type prog_name loaded_at pids
-        prog_id=$(echo "$prog" | jq -r '.id // "?"')
-        prog_type=$(echo "$prog" | jq -r '.type // "unknown"')
-        prog_name=$(echo "$prog" | jq -r '.name // "unnamed"')
-        loaded_at=$(echo "$prog" | jq -r '.loaded_at // "?"')
-        pids=$(echo "$prog" | jq -r '.pids // [] | join(",")' 2>/dev/null) || pids=""
+    # Check each program with attribution - use defensive jq with fallbacks
+    echo "$prog_data" | jq -c '.[]?' 2>/dev/null | while read -r prog; do
+        [[ -z "$prog" ]] && continue
+
+        local prog_id prog_type prog_name pids
+        prog_id=$(echo "$prog" | jq -r '(.id // .prog_id // "?") | tostring' 2>/dev/null) || prog_id="?"
+        prog_type=$(echo "$prog" | jq -r '.type // "unknown"' 2>/dev/null) || prog_type="unknown"
+        prog_name=$(echo "$prog" | jq -r '.name // "unnamed"' 2>/dev/null) || prog_name="unnamed"
+        # .pids may not exist in older bpftool versions
+        pids=$(echo "$prog" | jq -r '(.pids // [])? | if type == "array" then join(",") else "" end' 2>/dev/null) || pids=""
+
+        # Check if this looks like known tooling
+        local known_tool_match=""
+        if [[ -n "$KNOWN_TOOLING" ]]; then
+            for tool in $KNOWN_TOOLING; do
+                if [[ "$prog_name" == *"$tool"* ]] || [[ "$prog_name" == *"cilium"* ]] || \
+                   [[ "$prog_name" == *"falco"* ]] || [[ "$prog_name" == *"tetra"* ]]; then
+                    known_tool_match="$tool"
+                    break
+                fi
+            done
+        fi
 
         # Attribution matters more than type
         case "$prog_type" in
             kprobe|tracepoint|raw_tracepoint|raw_tracepoint_writable)
-                if [[ -z "$pids" ]]; then
+                if [[ -n "$known_tool_match" ]]; then
+                    log_info "$prog_type (expected: $known_tool_match): ID=$prog_id Name=$prog_name"
+                elif [[ -z "$pids" ]] || [[ "$pids" == "null" ]]; then
                     log_warning "Unattributed $prog_type program: ID=$prog_id Name=$prog_name"
+                    collect_evidence ebpf "$prog_id"
                 else
                     log_info "$prog_type program: ID=$prog_id Name=$prog_name PIDs=[$pids]"
                 fi
                 ;;
             lsm)
-                log_warning "LSM BPF program: ID=$prog_id Name=$prog_name (security hook)"
+                if [[ -n "$known_tool_match" ]]; then
+                    log_info "LSM BPF (expected: $known_tool_match): ID=$prog_id Name=$prog_name"
+                else
+                    log_warning "LSM BPF program: ID=$prog_id Name=$prog_name (security hook)"
+                    collect_evidence ebpf "$prog_id"
+                fi
                 ;;
             *)
                 # socket_filter, xdp, etc - usually benign but log in full mode
@@ -317,17 +434,14 @@ log_section "3. Kernel Module Analysis"
 check_kernel_modules() {
     log_info "Analyzing loaded kernel modules..."
 
-    # Check kernel taint - this is a useful signal
+    # Check kernel taint - useful signal, but don't try to decode (kernel-version dependent)
     if [[ -f "/proc/sys/kernel/tainted" ]]; then
         local taint
         taint=$(cat /proc/sys/kernel/tainted 2>/dev/null) || taint="?"
-        if [[ "$taint" != "0" ]]; then
-            log_warning "Kernel is tainted: $taint"
-            # Decode common taint flags
-            [[ $((taint & 1)) -ne 0 ]] && log_info "  - Proprietary module loaded"
-            [[ $((taint & 4)) -ne 0 ]] && log_info "  - Out-of-tree module loaded"
-            [[ $((taint & 4096)) -ne 0 ]] && log_info "  - Unsigned module loaded"
-            [[ $((taint & 8192)) -ne 0 ]] && log_info "  - Soft lockup occurred"
+        if [[ "$taint" != "0" ]] && [[ "$taint" != "?" ]]; then
+            log_warning "Kernel is tainted (value: $taint)"
+            log_info "  See: /usr/src/linux/Documentation/admin-guide/tainted-kernels.rst"
+            log_info "  Or: https://docs.kernel.org/admin-guide/tainted-kernels.html"
         else
             log_ok "Kernel is not tainted"
         fi
@@ -377,13 +491,21 @@ check_kernel_modules() {
         fi
     done < <(awk '{print $1}' /proc/modules 2>/dev/null)
 
-    # More useful: check for modules without corresponding files
+    # Check for modules without corresponding files (INFO level - many false positives)
     if [[ "$FULL_SCAN" == "true" ]] && [[ "$IS_ROOT" == "true" ]]; then
-        log_info "Checking modules have corresponding .ko files..."
-        local mod_dir="/lib/modules/$(uname -r)"
+        log_info "Checking module file locations (may have false positives)..."
         for mod in $proc_modules; do
-            if ! find "$mod_dir" -name "${mod}.ko*" 2>/dev/null | grep -q .; then
-                log_warning "Module '$mod' loaded but no .ko file found in $mod_dir"
+            # Try modinfo first - it handles name normalization
+            local mod_file
+            mod_file=$(modinfo -n "$mod" 2>/dev/null)
+            if [[ -z "$mod_file" ]] || [[ "$mod_file" == *"not found"* ]]; then
+                # modinfo failed - could be built-in, initramfs, or actually missing
+                # Also try with underscore/hyphen normalization
+                local mod_alt="${mod//_/-}"
+                mod_file=$(modinfo -n "$mod_alt" 2>/dev/null)
+                if [[ -z "$mod_file" ]] || [[ "$mod_file" == *"not found"* ]]; then
+                    log_info "Module '$mod' has no file via modinfo (may be built-in/initramfs)"
+                fi
             fi
         done
     fi
@@ -453,45 +575,65 @@ check_ftrace_hooks() {
         return
     fi
 
-    log_info "Checking for active ftrace hooks..."
+    # The real signals for ftrace-based hooking:
+    # 1. current_tracer != nop (active tracer)
+    # 2. kprobes/list has entries (kprobe hooks)
+    # 3. set_ftrace_filter alone is NOT a hook - just a filter for when tracing is enabled
 
-    # Check enabled functions
+    # Check current tracer FIRST - this is the primary signal
+    local current_tracer
+    current_tracer=$(cat /sys/kernel/debug/tracing/current_tracer 2>/dev/null) || current_tracer="unknown"
+    if [[ "$current_tracer" != "nop" ]] && [[ "$current_tracer" != "unknown" ]]; then
+        log_warning "Active ftrace tracer: $current_tracer"
+    else
+        log_ok "No active ftrace tracer (current_tracer=nop)"
+    fi
+
+    # Check set_ftrace_filter - but clarify this is NOT active hooking by itself
     local enabled_funcs="/sys/kernel/debug/tracing/set_ftrace_filter"
-    if [[ -r "$enabled_funcs" ]]; then
-        local hook_count
-        hook_count=$(grep -cvE '^#|^$' "$enabled_funcs" 2>/dev/null) || hook_count=0
-        if [[ $hook_count -gt 0 ]]; then
-            log_warning "$hook_count ftrace filter entries active"
-            grep -vE '^#|^$' "$enabled_funcs" 2>/dev/null | head -10 | while read -r func; do
-                log_info "  $func"
-            done
-            [[ $hook_count -gt 10 ]] && log_info "  ... and $((hook_count - 10)) more"
-        else
-            log_ok "No ftrace filter entries"
+    if [[ -r "$enabled_funcs" ]] && [[ "$FULL_SCAN" == "true" ]]; then
+        local filter_count
+        filter_count=$(grep -cvE '^#|^$' "$enabled_funcs" 2>/dev/null) || filter_count=0
+        if [[ $filter_count -gt 0 ]]; then
+            log_info "$filter_count ftrace filter entries (filter config, not active hooks)"
         fi
     fi
 
-    # Check kprobes - this is where modern hooking happens
+    # Check kprobes - this IS where modern hooking happens
+    log_info "Checking kprobes (primary kernel hook mechanism)..."
     local kprobe_list="/sys/kernel/debug/kprobes/list"
     if [[ -r "$kprobe_list" ]]; then
         local kprobe_count
         kprobe_count=$(wc -l < "$kprobe_list" 2>/dev/null) || kprobe_count=0
         if [[ $kprobe_count -gt 0 ]]; then
-            log_warning "$kprobe_count active kprobes (may be legitimate security/observability tools)"
-            head -10 "$kprobe_list" 2>/dev/null | while read -r line; do
-                log_info "  $line"
-            done
-            [[ $kprobe_count -gt 10 ]] && log_info "  ... and $((kprobe_count - 10)) more"
+            # Check for known tooling
+            if [[ -n "$KNOWN_TOOLING" ]]; then
+                log_info "$kprobe_count active kprobes (known tooling detected: $KNOWN_TOOLING)"
+            else
+                log_warning "$kprobe_count active kprobes"
+            fi
+
+            # Look for suspicious targets (syscalls, security hooks, creds)
+            local suspicious_targets="sys_|do_sys|security_|prepare_creds|commit_creds|__x64_sys|vfs_"
+            local suspicious_kprobes
+            suspicious_kprobes=$(grep -E "$suspicious_targets" "$kprobe_list" 2>/dev/null | head -10)
+            if [[ -n "$suspicious_kprobes" ]]; then
+                log_info "  Kprobes on sensitive functions:"
+                echo "$suspicious_kprobes" | while read -r line; do
+                    log_info "    $line"
+                done
+            fi
+
+            if [[ "$FULL_SCAN" == "true" ]]; then
+                log_info "  All kprobes:"
+                head -10 "$kprobe_list" 2>/dev/null | while read -r line; do
+                    log_info "    $line"
+                done
+                [[ $kprobe_count -gt 10 ]] && log_info "    ... and $((kprobe_count - 10)) more"
+            fi
         else
             log_ok "No active kprobes"
         fi
-    fi
-
-    # Check current tracer
-    local current_tracer
-    current_tracer=$(cat /sys/kernel/debug/tracing/current_tracer 2>/dev/null) || current_tracer="unknown"
-    if [[ "$current_tracer" != "nop" ]] && [[ "$current_tracer" != "unknown" ]]; then
-        log_warning "Active tracer: $current_tracer"
     fi
 }
 
@@ -522,7 +664,7 @@ check_network_anomalies() {
     done
     [[ "$promisc_found" == "false" ]] && log_ok "No promiscuous interfaces"
 
-    # Check for raw sockets with proper capability parsing
+    # Check for raw sockets
     log_info "Checking for raw sockets..."
     local raw_count
     raw_count=$(cat /proc/net/raw /proc/net/raw6 2>/dev/null | tail -n +2 | wc -l) || raw_count=0
@@ -530,26 +672,33 @@ check_network_anomalies() {
     if [[ $raw_count -gt 0 ]]; then
         log_info "$raw_count raw socket(s) detected"
 
-        if [[ "$IS_ROOT" == "true" ]]; then
-            # Map socket inodes to processes
-            # Get inodes from /proc/net/raw
-            local raw_inodes
-            raw_inodes=$(awk 'NR>1 {print $10}' /proc/net/raw /proc/net/raw6 2>/dev/null | sort -u)
+        # Only do expensive inode->process mapping in --full mode
+        if [[ "$IS_ROOT" == "true" ]] && [[ "$FULL_SCAN" == "true" ]]; then
+            log_info "Mapping raw sockets to processes..."
+            local raw_inodes match_count=0 max_matches=10
+            # Field position may vary - try to be defensive
+            raw_inodes=$(awk 'NR>1 && NF>=10 {print $10}' /proc/net/raw /proc/net/raw6 2>/dev/null | sort -u | head -20)
 
             for inode in $raw_inodes; do
-                [[ -z "$inode" ]] && continue
-                # Find which process has this socket
+                [[ -z "$inode" ]] || [[ "$inode" == "0" ]] && continue
+                [[ $match_count -ge $max_matches ]] && break
+
+                # Find which process has this socket - limit scan
                 for pid_dir in /proc/[0-9]*; do
                     local pid
                     pid=$(basename "$pid_dir")
                     if ls -la "$pid_dir/fd" 2>/dev/null | grep -q "socket:\[$inode\]"; then
                         local comm
                         comm=$(cat "$pid_dir/comm" 2>/dev/null) || comm="unknown"
-                        log_info "  Raw socket inode $inode -> PID $pid ($comm)"
+                        log_info "  Raw socket -> PID $pid ($comm)"
+                        match_count=$((match_count + 1))
                         break
                     fi
                 done
             done
+            [[ $match_count -ge $max_matches ]] && log_info "  (limited to $max_matches matches)"
+        elif [[ $raw_count -gt 5 ]]; then
+            log_info "  Use --full to map sockets to processes"
         fi
     else
         log_ok "No raw sockets detected"
@@ -695,11 +844,21 @@ check_persistence() {
         fi
     done
 
-    # Check PAM configuration
+    # Check PAM configuration - capture output properly
     if [[ -d "/etc/pam.d" ]]; then
         log_info "Checking PAM configuration..."
-        if grep -rE 'pam_exec|pam_script' /etc/pam.d/ 2>/dev/null | grep -v '^#'; then
-            log_warning "PAM exec/script modules in use - verify legitimacy"
+        local pam_exec_matches
+        pam_exec_matches=$(grep -rlE 'pam_exec|pam_script' /etc/pam.d/ 2>/dev/null | head -10)
+        if [[ -n "$pam_exec_matches" ]]; then
+            log_info "PAM exec/script modules found (may be legitimate):"
+            echo "$pam_exec_matches" | while read -r pam_file; do
+                log_info "  $pam_file"
+                if [[ "$FULL_SCAN" == "true" ]]; then
+                    grep -E 'pam_exec|pam_script' "$pam_file" 2>/dev/null | grep -v '^#' | head -2 | while read -r line; do
+                        log_info "    $line"
+                    done
+                fi
+            done
         fi
     fi
 }
