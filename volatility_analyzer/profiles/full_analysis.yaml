@@ -1,0 +1,50 @@
+name: full_analysis
+description: Comprehensive analysis - all available Linux plugins for thorough investigation
+os: linux
+
+plugins:
+  # Process analysis
+  - pslist
+  - pstree
+  - bash
+  - envars
+  - lsof
+  - capabilities
+
+  # Kernel module analysis
+  - lsmod
+  - check_modules
+  - hidden_modules
+
+  # Integrity checks
+  - check_syscall
+  - check_idt
+  - tty_check
+  - keyboard_notifiers
+
+  # Network analysis
+  - netstat
+  - sockstat
+
+  # Memory analysis
+  - malfind
+  - elfs
+  - proc_maps
+
+  # System information
+  - mount
+  - kmsg
+
+detection:
+  check_hidden_processes: true
+  check_hidden_modules: true
+  check_syscall_hooks: true
+  check_idt_hooks: true
+  check_suspicious_modules: true
+  check_network_anomalies: true
+  check_memory_injection: true
+  check_privilege_anomalies: true
+  check_suspicious_processes: true
+  check_kernel_threads: true
+  check_tty_hooks: true
+  check_keyboard_notifiers: true

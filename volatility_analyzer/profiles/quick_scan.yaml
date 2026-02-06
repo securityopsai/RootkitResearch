@@ -1,0 +1,15 @@
+name: quick_scan
+description: Fast triage scan - core plugins for rapid initial assessment
+os: linux
+
+plugins:
+  - pslist
+  - pstree
+  - lsmod
+  - netstat
+
+detection:
+  check_hidden_processes: true
+  check_suspicious_modules: true
+  check_network_anomalies: true
+  check_suspicious_processes: true

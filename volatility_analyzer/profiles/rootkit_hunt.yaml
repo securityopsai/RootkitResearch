@@ -1,0 +1,45 @@
+name: rootkit_hunt
+description: Rootkit-focused analysis - targets LKM, eBPF, and syscall-hooking rootkits
+os: linux
+
+plugins:
+  # Process enumeration for cross-referencing
+  - pslist
+  - pstree
+
+  # Kernel module checks (critical for LKM rootkits)
+  - lsmod
+  - check_modules
+  - hidden_modules
+
+  # Syscall and interrupt integrity (classic hook detection)
+  - check_syscall
+  - check_idt
+
+  # Keylogger detection
+  - tty_check
+  - keyboard_notifiers
+
+  # Memory injection (code injection / process hollowing)
+  - malfind
+  - proc_maps
+
+  # Network (C2 detection)
+  - netstat
+
+  # Privilege analysis
+  - capabilities
+
+detection:
+  check_hidden_processes: true
+  check_hidden_modules: true
+  check_syscall_hooks: true
+  check_idt_hooks: true
+  check_suspicious_modules: true
+  check_network_anomalies: true
+  check_memory_injection: true
+  check_privilege_anomalies: true
+  check_suspicious_processes: true
+  check_kernel_threads: true
+  check_tty_hooks: true
+  check_keyboard_notifiers: true

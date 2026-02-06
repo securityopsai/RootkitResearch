@@ -1,0 +1,21 @@
+name: windows_triage
+description: Windows memory triage - common plugins for Windows incident response
+os: windows
+
+plugins:
+  - win_pslist
+  - win_pstree
+  - win_netscan
+  - win_modules
+  - win_ssdt
+  - win_callbacks
+  - win_malfind
+  - win_svcscan
+  - win_dlllist
+  - win_cmdline
+
+detection:
+  check_hidden_processes: true
+  check_suspicious_processes: true
+  check_network_anomalies: true
+  check_memory_injection: true
