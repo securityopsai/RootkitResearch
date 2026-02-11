@@ -1,0 +1,6 @@
+# Core dependencies
+volatility3>=2.4.0
+pyyaml>=6.0
+
+# Optional: YARA support for memory scanning
+# yara-python>=4.3.0
