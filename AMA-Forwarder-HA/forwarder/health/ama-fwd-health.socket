@@ -1,0 +1,15 @@
+# /etc/systemd/system/ama-fwd-health.socket
+# HTTP health endpoint for load balancer probes (Azure LB, F5, HAProxy, NetScaler).
+# Not needed for the keepalived-only build: keepalived calls the script directly.
+# Firewall this port to the probe source (Azure LB: 168.63.129.16) and monitoring.
+
+[Unit]
+Description=AMA forwarder health endpoint
+
+[Socket]
+ListenStream=8514
+Accept=yes
+MaxConnections=16
+
+[Install]
+WantedBy=sockets.target

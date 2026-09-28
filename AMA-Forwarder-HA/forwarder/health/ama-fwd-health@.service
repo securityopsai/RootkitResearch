@@ -1,0 +1,23 @@
+# /etc/systemd/system/ama-fwd-health@.service
+# One instance per probe connection (spawned by ama-fwd-health.socket).
+# Runs as root only to read AMA's config-cache/syslog.port; everything else is
+# read-only and the unit is sandboxed.
+
+[Unit]
+Description=AMA forwarder health probe responder
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/local/sbin/ama-fwd-health all --http
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes

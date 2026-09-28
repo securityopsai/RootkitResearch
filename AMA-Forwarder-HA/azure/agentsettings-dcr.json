@@ -1,0 +1,52 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "description": "AgentSettings DCR that raises the Azure Monitor Agent local cache (default 10,000 MB) on the syslog forwarders. Requires AMA Linux 1.33.4+. ARM is the only supported way to create AgentSettings DCRs. Associate it with every forwarder (see README), then restart azuremonitoragent."
+    },
+    "parameters": {
+        "location": {
+            "type": "string",
+            "defaultValue": "[resourceGroup().location]"
+        },
+        "dcrName": {
+            "type": "string",
+            "defaultValue": "dcr-ama-fwd-agentsettings"
+        },
+        "maxDiskQuotaInMB": {
+            "type": "int",
+            "defaultValue": 100000,
+            "minValue": 4000,
+            "maxValue": 1000000,
+            "metadata": {
+                "description": "Cache size = peak EPS x average event bytes x outage seconds you must ride through (see README sizing). Keep the /var volume at least 30% larger."
+            }
+        }
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Insights/dataCollectionRules",
+            "apiVersion": "2025-05-11",
+            "name": "[parameters('dcrName')]",
+            "location": "[parameters('location')]",
+            "kind": "AgentSettings",
+            "properties": {
+                "description": "AMA agent settings for the syslog/CEF forwarder cluster",
+                "agentSettings": {
+                    "logs": [
+                        {
+                            "name": "MaxDiskQuotaInMB",
+                            "value": "[string(parameters('maxDiskQuotaInMB'))]"
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "outputs": {
+        "dcrId": {
+            "type": "string",
+            "value": "[resourceId('Microsoft.Insights/dataCollectionRules', parameters('dcrName'))]"
+        }
+    }
+}
