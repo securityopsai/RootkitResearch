@@ -8,12 +8,12 @@ Confidence tags used below: **[H]** means I verified it against primary document
 
 ## 1. Recommendation in one paragraph
 
-Build **two identical, shared-nothing Linux forwarders** (rsyslog + AMA via Azure Arc). Put them behind **two keepalived VIPs in an active/active split**: VIP-A normally lives on node 1 and VIP-B on node 2, and each VIP fails over to the other node. Point half of the appliances at each VIP over **TCP 514**. Point Linux hosts that cannot run AMA themselves at the VIPs over **RELP 2514**, with a disk-assisted queue on the sender. Protect the WAN leg by raising AMA's local cache (`MaxDiskQuotaInMB`) to cover the outage you must ride through. There is no load balancer appliance, no Pacemaker, no shared disk and no replication: a VIP is the only cluster state. In Azure, where VRRP cannot work, swap keepalived for a Standard internal load balancer with an HTTP health probe (section 7).
+Build **two identical, shared-nothing Linux forwarders** (rsyslog + AMA via Azure Arc). Put them behind **two keepalived VIPs in an active/active split**: VIP-A normally lives on node 1 and VIP-B on node 2, and each VIP fails over to the other node. Point half of the appliances at each VIP over **TCP 514**. Point Linux hosts that cannot run AMA themselves at the VIPs over **RELP 2514**, with a disk-assisted queue on the sender. Protect the WAN leg by raising AMA's local cache (`MaxDiskQuotaInMB`) to cover the outage you must ride through. There is no load balancer appliance, no Pacemaker, no shared disk and no replication: a VIP is the only cluster state. On virtualised infrastructure, the hypervisor and virtual-network settings in section 7 decide whether the VIPs actually fail over cleanly.
 
 ## 2. Assumptions (correct me if any is wrong)
 
 1. The target is **Microsoft Sentinel / Log Analytics** via the *Syslog via AMA* and *CEF via AMA* connectors. Sources are appliances (firewalls, proxies, switches) plus some Linux hosts. Windows Event Forwarding is out of scope, because it has a different HA model.
-2. The forwarders run **on-premises** on VMware or Hyper-V, with both nodes on the same L2 segment. They are therefore Azure Arc-enabled, since AMA requires Arc outside Azure [H].
+2. **Confirmed:** the forwarders run on **on-premises virtualisation**, with both nodes on the same L2 segment (VLAN or port group). They are therefore Azure Arc-enabled, since AMA requires Arc outside Azure [H]. Which hypervisor, and whether NSX or another SDN is in the path, still changes a few settings (section 7).
 3. Peak volume is **≤ 10,000 EPS per forwarder pair**. Above that, see section 11.
 4. "Automatic failover" means *no human action*, and a loss window of seconds is acceptable for appliances that can only speak plain TCP or UDP. Zero loss is achievable only where the sender speaks RELP (section 5).
 
@@ -60,7 +60,7 @@ Two consequences follow:
 |---|---|---|---|
 | **keepalived dual VIP** | The VIP moves, the new owner has no socket and **resets** the sender's next segment, and the sender reconnects within seconds (lab: VIP moved ~3 s after a simulated crash) [H] | Two packages already in every distro, one config file per node | **Recommended on-premises** |
 | Enterprise L4 LB (F5, NetScaler) | Good *if* configured to reset connections on member-down (F5 calls this "Action On Service Down = Reset") [M]. Beware SNAT, which hides the source IP | Depends on the network team's change process | Fine if you already run one well |
-| Azure Standard LB | On probe-down, **established TCP flows stay pinned to the unhealthy backend** and UDP flows move [H]. After a VM crash, a TCP sender stalls until its own TCP timeout [M] | Managed | **Only option inside Azure** (section 7) |
+| Azure Standard LB | On probe-down, **established TCP flows stay pinned to the unhealthy backend** and UDP flows move [H]. After a VM crash, a TCP sender stalls until its own TCP timeout [M] | Managed | **Only option inside Azure** (Appendix A) |
 | DNS round robin | No health awareness, and appliances cache resolved IPs | Low | Not failover |
 | Send every source to both nodes | Survives anything | Low | **Doubles ingestion cost and duplicates alerts.** Reject |
 | HAProxy/nginx stream proxy on the nodes | Adds a hop, hides source IP, and still no application-level ack | Extra tier | Reject |
@@ -87,11 +87,11 @@ I tested the design pieces on Ubuntu 24.04 with rsyslog 8.2312 and 8.2608, and k
 
 | Item | Spec | Why |
 |---|---|---|
-| Nodes | 2 VMs, **hypervisor anti-affinity** (e.g. a VMware DRS "separate VMs" rule), ideally different datastores | One host failure must not take both |
+| Nodes | 2 VMs, **hypervisor anti-affinity**, ideally different datastores (section 7.1) | One host failure must not take both |
 | OS | A distro on AMA's supported-OS list that your team already patches (RHEL 9 / Ubuntu LTS are typical) [M: check the current list] | Supportability beats novelty |
 | vCPU / RAM | 4 vCPU / 16 GB up to ~5k EPS; 8 vCPU / 16 GB up to 10k EPS | Microsoft's 10k EPS benchmark ran on an F8s_v2 (8 vCPU/16 GiB): avg CPU 51% of 800%, max 262%, RSS max ~1 GB [H]. My sizing below 10k is a judgement [M] |
 | Disks | OS disk plus a **dedicated `/var` volume** sized from section 9 | AMA cache, rsyslog queues and logs all live under `/var`. A full disk stops AMA [H] |
-| Network | Static IPs on the same L2 segment as the two VIPs. Time sync (chrony) to the same NTP as the sources | VRRP and GARP are L2. EventTime depends on the clock and time zone (6.6) |
+| Network | Static IPs on the same L2 segment as the two VIPs; VMXNET3 or synthetic vNIC. Time sync (chrony) to the same NTP as the sources | VRRP and GARP are L2 (section 7.2). EventTime depends on the clock and time zone (6.6) |
 | Throughput per node | **≤ 10k EPS sustained**, and each node must carry **100% of the pair's peak** alone | Microsoft's per-forwarder target. Loss is more likely above it [H] |
 
 ### 6.2 Firewall matrix
@@ -175,33 +175,46 @@ It deliberately does **not** check Azure reachability or cache backlog. A WAN ou
 
 AMA's rsyslog template on the forwarder is `<%PRI%>%TIMESTAMP% %HOSTNAME% …`, which renders an RFC 3164 timestamp with no UTC offset [H]. `EventTime` is then interpreted in the **forwarder's** time zone, and `TimeGenerated` is the forwarder's processing time [H]. RFC 5424 at the source does **not** fix this, because the offset is dropped at that hop. **Put sources and forwarders in the same time zone, preferably UTC everywhere.**
 
-## 7. Azure-hosted variant (forwarders in Azure)
+## 7. Hypervisor and virtual-network requirements (on-prem)
 
-VRRP cannot work in a VNet: it is L3-only, with no broadcast, multicast or gratuitous ARP [H]. Use a **Standard internal load balancer** instead:
+A floating VIP is an L2 mechanism: the new owner announces the VIP with a gratuitous ARP. It works on an ordinary VLAN-backed port group without special settings. The virtualisation layer still decides whether the two nodes really fail independently and whether a moved VIP is let through. Check the four areas below before go-live.
 
-- Two VMs in **different availability zones**, both in one backend pool.
-- An HTTP probe on `8514`, path `/`, interval 5 s, served by [`ama-fwd-health.socket`](forwarder/health/ama-fwd-health.socket) and [`ama-fwd-health@.service`](forwarder/health/ama-fwd-health@.service). The probe must get HTTP 200; any other status marks the backend down. Probes come from `168.63.129.16`, so don't block it [H].
-- Rules for TCP 514, UDP 514 and TCP 2514. On the TCP rules set the **idle timeout to 30 min and enable TCP reset**. The default is 4 min, the maximum 100 [H]. The forwarder's `keepAlive.time="600"` keeps idle senders' flows alive inside that window.
+### 7.1 Separate failure domains
 
-```bash
-# Illustrative - verify flags with --help for your az version [M]
-az network lb create -g rg-soc-ingest -n lb-ama-fwd --sku Standard --vnet-name vnet-soc --subnet snet-fwd \
-  --frontend-ip-name fe-syslog --private-ip-address 10.20.1.10 --backend-pool-name be-ama-fwd
-az network lb probe create -g rg-soc-ingest --lb-name lb-ama-fwd -n hp-ama-fwd --protocol Http --port 8514 --path / --interval 5
-az network lb rule create -g rg-soc-ingest --lb-name lb-ama-fwd -n syslog-tcp --protocol Tcp --frontend-port 514 --backend-port 514 \
-  --frontend-ip-name fe-syslog --backend-pool-name be-ama-fwd --probe-name hp-ama-fwd --idle-timeout 30 --enable-tcp-reset true
-az network lb rule create -g rg-soc-ingest --lb-name lb-ama-fwd -n syslog-udp --protocol Udp --frontend-port 514 --backend-port 514 \
-  --frontend-ip-name fe-syslog --backend-pool-name be-ama-fwd --probe-name hp-ama-fwd
-az network lb rule create -g rg-soc-ingest --lb-name lb-ama-fwd -n relp --protocol Tcp --frontend-port 2514 --backend-port 2514 \
-  --frontend-ip-name fe-syslog --backend-pool-name be-ama-fwd --probe-name hp-ama-fwd --idle-timeout 30 --enable-tcp-reset true
-```
+| Platform | Setting |
+|---|---|
+| vSphere | DRS VM-VM rule of type **"Separate Virtual Machines"** for `amafwd01` and `amafwd02`. Put them on different datastores where possible, because a shared-datastore outage takes both |
+| Hyper-V failover cluster | `(Get-ClusterGroup amafwd01).AntiAffinityClassNames = "amafwd"`, and the same for `amafwd02`. This is a *soft* rule, which is what you want on a two-node cluster. `(Get-Cluster).ClusterEnforcedAntiAffinity = 1` makes it hard, but then the second VM cannot start while a node is down [H]. Newer Windows Server also has `New-ClusterAffinityRule` with a *different node* rule type [H] |
+| Proxmox, Nutanix AHV, other KVM | Use the platform's VM anti-affinity feature. At minimum, pin the two VMs to different hosts |
 
-**Known weakness, and why on-premises keepalived is better where you have a choice.** On probe-down, Azure LB leaves **established TCP flows on the unhealthy backend** [H]. Two things follow:
+Hypervisor HA (vSphere HA, cluster failover) is complementary. keepalived moves the VIP in seconds; hypervisor HA restarts the dead VM and restores redundancy in minutes.
 
-- **Maintenance.** Set the backend's *Admin State* to Down first, then **restart rsyslog** on that VM to push its sessions over to the healthy node [H: Admin State semantics].
-- **VM crash.** Nothing resets the sender. A plain-TCP appliance stalls until its own TCP retransmission timeout, which on Linux defaults to many minutes and varies by vendor elsewhere [M]. RELP senders recover through RELP's own timeout. UDP flows do move to a healthy instance on probe-down [H].
+### 7.2 Let the VIPs through the virtual switch
 
-Also expect uneven load, because a 5-tuple hash with a few heavy senders is inherently lumpy. Size each node for the full load anyway.
+- **No port-group security changes are needed.** The configs here move a VIP by announcing it from the node's own MAC (no `use_vmac`). Promiscuous mode, forged transmits and MAC spoofing are only required with `use_vmac`, so keep it off [M].
+- **NSX (vSphere).** The IP Discovery profile's ARP binding limit **defaults to 1 per port**. Addresses beyond it are not learned, and SpoofGuard can drop their traffic as unauthorized [H].
+  - A forwarder can hold its own IP plus both VIPs, so apply an IP Discovery profile with an **ARP binding limit of at least 3** to the forwarders' segment or ports. Alternatively, add both VIPs as manual address bindings on both nodes' ports.
+  - ARP snooping defaults to Trust-On-First-Use, so learned bindings never age out [M]. Here that is harmless, because both nodes should be authorized for both VIPs.
+  - Write Distributed Firewall rules against an **IP-set group that contains the VIPs**. A VM-membership group only covers the IPs NSX has bound to those VMs.
+- **Other SDN or overlay networks with per-vNIC IP enforcement** (e.g. Hyper-V Network Controller): expect the same class of problem, and check the platform's rules for secondary or floating IPs [M].
+- **Upstream gateway and L3 firewalls** must accept gratuitous ARP for the VIP subnet. `vrrp_garp_master_refresh 60` re-announces every minute as a backstop. Drill D3 tests it.
+
+### 7.3 VM stun versus VRRP timers
+
+With `advert_int 1`, the backup takes a VIP after about 3.6 s without adverts. Anything that freezes the current owner for longer triggers a false failover. The VIP then moves back when the owner wakes, which means two reconnects for TCP senders.
+
+- **vMotion / live migration** normally stuns a VM for well under a second, which is fine [M]. Drill D8 checks it.
+- **Snapshot creation and consolidation** (backup jobs) can stun a busy VM for several seconds [M]. Drill D9 checks it.
+
+**Recommendation:** don't back these VMs up with snapshots at all. They are stateless and can be rebuilt from this repo in minutes; the only state is AMA's cache during a WAN outage. If snapshot backups are mandated, raise `advert_int` to 3 on both nodes. Crash failover then slows to about 10 s.
+
+Also avoid memory overcommit on these VMs, for example with a memory reservation. Host-level ballooning or swapping stalls the guest in the same way as a stun.
+
+### 7.4 Guest settings
+
+- **vNIC:** VMXNET3 on vSphere, or the synthetic network adapter on Hyper-V. Avoid emulated E1000 or legacy adapters. For heavy UDP, raise the receive ring (`ethtool -G ens192 rx 4096` on VMXNET3; persist it in your network configuration, since it resets on reboot) and watch `nstat -az UdpRcvbufErrors` [M].
+- **Time:** use exactly one clock discipline, chrony in the guest pointed at your NTP. On vSphere, leave VMware Tools periodic time sync off, which is the default [M]. On Hyper-V, either disable the Time Synchronization integration service for these VMs or use it as chrony's reference clock, but not both [M]. Section 6.6 explains why the clock and time zone matter for `EventTime`.
+- **Arc:** plain Arc-enabled servers (the Connected Machine agent inside each guest) is all AMA needs. Arc-enabled vSphere or SCVMM is not required [H].
 
 ## 8. Onboarding sources
 
@@ -338,6 +351,8 @@ Use [`tests/seqsender.py`](tests/seqsender.py) from a host positioned like your 
 | D5 | Stop AMA on **both**, wait 5 min, start | VIPs stay; loss 0 after drain |
 | D6 | Block outbound 443 for 1–2 h | Loss 0 after backfill; record cache growth per hour to validate section 9 |
 | D7 | Fill `/var` past 90% | VIP moves off the node |
+| D8 | vMotion / live-migrate the VIP owner under load | No VIP movement (`journalctl -u keepalived` shows no transition); RELP loss 0 |
+| D9 | Snapshot the VIP owner, only if your backup tool does this | No VIP flap; if it flaps, apply section 7.3 |
 
 ```kusto
 let run = "drill1"; let sent = 300000;
@@ -375,11 +390,12 @@ CommonSecurityLog
 |---|---|---|
 | AMA cache bytes per event vs raw size | M | Drill D6 |
 | Appliance reconnect and buffering after a reset, per vendor | L–M | Drills D1/D3 per device model |
-| Azure LB: TCP stall duration after a backend VM crash | M | Drill D3 in the Azure variant |
+| Hypervisor and SDN in use (vSphere with or without NSX, Hyper-V, other) | Unknown | Tell me; it decides the section 7.2 settings |
+| NSX IP Discovery / SpoofGuard behaviour for VIPs on your NSX version | M | Drill D3 in both directions (VIP to node 2 and back) |
+| Stun length of your snapshot-based backup, if any | M | Drill D9 |
 | SELinux labels for keepalived scripts and port 2514 on your RHEL minor version | M | Enforcing-mode test plus `ausearch` |
 | Whether AMA auto-upgrade can hit both Arc nodes at once | M | Mitigated by the weighted `forward` check either way (lab-tested) |
 | Upstream switches or firewalls honouring gratuitous ARP on VIP move | M | Drill D3; `vrrp_garp_master_refresh 60` is set as a backstop |
-| `az` CLI flags in section 7 | M | `--help` on your CLI version |
 
 ## 16. Files
 
@@ -394,6 +410,36 @@ CommonSecurityLog
 | `azure/agentsettings-dcr.json` | ARM deployment (cache quota) |
 | `sources/*.conf` | Linux source hosts |
 | `tests/seqsender.py` | Failover drills |
+
+## Appendix A. Azure-hosted variant (reference only)
+
+You run on-prem virtualisation, so you don't need this. It is kept in case forwarders are ever hosted in Azure.
+
+VRRP cannot work in a VNet: it is L3-only, with no broadcast, multicast or gratuitous ARP [H]. Use a **Standard internal load balancer** instead:
+
+- Two VMs in **different availability zones**, both in one backend pool.
+- An HTTP probe on `8514`, path `/`, interval 5 s, served by [`ama-fwd-health.socket`](forwarder/health/ama-fwd-health.socket) and [`ama-fwd-health@.service`](forwarder/health/ama-fwd-health@.service). The probe must get HTTP 200; any other status marks the backend down. Probes come from `168.63.129.16`, so don't block it [H].
+- Rules for TCP 514, UDP 514 and TCP 2514. On the TCP rules set the **idle timeout to 30 min and enable TCP reset**. The default is 4 min, the maximum 100 [H]. The forwarder's `keepAlive.time="600"` keeps idle senders' flows alive inside that window.
+
+```bash
+# Illustrative - verify flags with --help for your az version [M]
+az network lb create -g rg-soc-ingest -n lb-ama-fwd --sku Standard --vnet-name vnet-soc --subnet snet-fwd \
+  --frontend-ip-name fe-syslog --private-ip-address 10.20.1.10 --backend-pool-name be-ama-fwd
+az network lb probe create -g rg-soc-ingest --lb-name lb-ama-fwd -n hp-ama-fwd --protocol Http --port 8514 --path / --interval 5
+az network lb rule create -g rg-soc-ingest --lb-name lb-ama-fwd -n syslog-tcp --protocol Tcp --frontend-port 514 --backend-port 514 \
+  --frontend-ip-name fe-syslog --backend-pool-name be-ama-fwd --probe-name hp-ama-fwd --idle-timeout 30 --enable-tcp-reset true
+az network lb rule create -g rg-soc-ingest --lb-name lb-ama-fwd -n syslog-udp --protocol Udp --frontend-port 514 --backend-port 514 \
+  --frontend-ip-name fe-syslog --backend-pool-name be-ama-fwd --probe-name hp-ama-fwd
+az network lb rule create -g rg-soc-ingest --lb-name lb-ama-fwd -n relp --protocol Tcp --frontend-port 2514 --backend-port 2514 \
+  --frontend-ip-name fe-syslog --backend-pool-name be-ama-fwd --probe-name hp-ama-fwd --idle-timeout 30 --enable-tcp-reset true
+```
+
+**Known weakness, and why on-premises keepalived is better where you have a choice.** On probe-down, Azure LB leaves **established TCP flows on the unhealthy backend** [H]. Two things follow:
+
+- **Maintenance.** Set the backend's *Admin State* to Down first, then **restart rsyslog** on that VM to push its sessions over to the healthy node [H: Admin State semantics].
+- **VM crash.** Nothing resets the sender. A plain-TCP appliance stalls until its own TCP retransmission timeout, which on Linux defaults to many minutes and varies by vendor elsewhere [M]. RELP senders recover through RELP's own timeout. UDP flows do move to a healthy instance on probe-down [H].
+
+Also expect uneven load, because a 5-tuple hash with a few heavy senders is inherently lumpy. Size each node for the full load anyway.
 
 ## Sources
 
@@ -413,6 +459,13 @@ Microsoft (primary):
 - [Azure VNet FAQ: no multicast/broadcast, no L2](https://learn.microsoft.com/azure/virtual-network/virtual-networks-faq)
 - [Azure Monitor pipeline overview](https://learn.microsoft.com/azure/azure-monitor/data-collection/pipeline-overview) and [persistent storage limits](https://learn.microsoft.com/azure/azure-monitor/data-collection/pipeline-configure-cli)
 - [az monitor data-collection rule association create](https://learn.microsoft.com/cli/azure/monitor/data-collection/rule/association)
+
+Virtualisation:
+- [Broadcom KB: NSX ARP binding limit (default 1; excess IPs not learned; SpoofGuard may drop; raise for keepalived VIPs)](https://knowledge.broadcom.com/external/article/431548/configuration-guide-for-arp-binding-limi.html)
+- [NSX SpoofGuard: traffic not matching port bindings is dropped](https://techdocs.broadcom.com/us/en/vmware-cis/nsx/nsxt-dc/3-2/administration-guide/manager-mode/logical-switches-and-configuring-vm-attachment/switching-profiles/understanding-spoofguard.html)
+- [NSX IP discovery TOFU / TOEU (secondary source)](https://vxplanet.com/2022/11/24/nsx-security-trust-on-first-use-tofu-and-trust-on-every-use-toeu/)
+- [Windows Server failover cluster affinity (AntiAffinityClassNames, ClusterEnforcedAntiAffinity)](https://learn.microsoft.com/windows-server/failover-clustering/cluster-affinity)
+- [keepalived VMAC notes (why use_vmac needs relaxed vSwitch security)](https://github.com/acassen/keepalived/blob/master/doc/NOTE_vrrp_vmac.txt)
 
 rsyslog / syslog-ng (primary):
 - [omfwd target pools (rsyslog docs source)](https://github.com/rsyslog/rsyslog/blob/main/doc/source/configuration/modules/omfwd/parameters/basic.rst). [ChangeLog: native load balancing in 8.2408.0](https://github.com/rsyslog/rsyslog/blob/main/ChangeLog)
