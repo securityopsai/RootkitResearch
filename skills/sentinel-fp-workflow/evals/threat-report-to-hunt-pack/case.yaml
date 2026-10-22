@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: threat-report-to-hunt-pack
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  A hunt pack: IOC queries separated from behaviour queries, behaviour queries anchored on the process
+  with a few invariant tokens (not the full sample line or the sample-only task name), IOC lists
+  declared once and bound to the right columns/operators, a vendor-alert query, MITRE mapping per
+  query, a detection-candidate vs hunt-only verdict with reasons, time bounds, and a validation note.

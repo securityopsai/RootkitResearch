@@ -1,0 +1,8 @@
+// Hunt: potential beaconing — rare public destination contacted many times by few devices
+DeviceNetworkEvents
+| where Timestamp > ago(7d)
+| where ActionType == "ConnectionSuccess" and RemoteIPType == "Public"
+| summarize Connections = count(), Devices = dcount(DeviceId), Processes = make_set(InitiatingProcessFileName), FirstSeen = min(Timestamp), LastSeen = max(Timestamp) by RemoteIP
+| extend Hours = datetime_diff('hour', LastSeen, FirstSeen)
+| where Hours > 12
+| sort by Connections desc

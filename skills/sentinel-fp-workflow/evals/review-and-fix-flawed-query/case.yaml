@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: review-and-fix-flawed-query
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  The review names the bare join, the TimeGenerated/Timestamp platform mix-up and the self-inflicted
+  recent-window filter, the brittle full command-line literals and tiny has_any terms, case-sensitive
+  FileName matching, positional dynamic indexing, aggregation by DeviceName that drops DeviceId and the
+  missing Timestamp/ReportId; fixed.kql carries the required columns, explicit join kinds, capped sets
+  and passes the skill's lint with no warnings.

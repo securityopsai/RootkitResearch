@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: sentinel-password-spray-rule
+expected_outcome: |
+  A deployable Sentinel scheduled rule YAML: period longer than frequency or ingestion_time()
+  windowing, result codes hoisted and MFA/CA interrupt codes treated as credential-valid, dcount of
+  users per IP with hoisted thresholds, IP entity mapping whose column exists in the output, capped
+  sets, CredentialAccess/T1110.003, grouping or suppression settings.

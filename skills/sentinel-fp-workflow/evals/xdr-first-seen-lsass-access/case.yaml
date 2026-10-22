@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: xdr-first-seen-lsass-access
+expected_outcome: |
+  A deployable XDR custom detection: baseline-vs-recent first-seen logic with a guard gap,
+  required columns (Timestamp, ReportId, DeviceId) in the output, explicit join kinds or anti-join,
+  no self-inflicted Timestamp filter on the recent window, case-insensitive file-name matching,
+  hoisted tunables, and a rule doc with T1003.001, FPs and blind spots.

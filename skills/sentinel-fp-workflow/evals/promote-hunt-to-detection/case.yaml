@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: promote-hunt-to-detection
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  The XDR detection replaces ranking with hoisted thresholds and a population filter, carries
+  Timestamp/ReportId/DeviceId, caps sets, and the notes explain that the hourly XDR lookback is fixed
+  (4 h) so the 7-day window cannot stay, address alert volume/dedup, name MDE network sampling and
+  shared destinations as FP/FN sources, and give a post-deploy check.
