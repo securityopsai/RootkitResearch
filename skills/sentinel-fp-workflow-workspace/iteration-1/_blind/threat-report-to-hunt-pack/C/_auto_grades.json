@@ -1,0 +1,18 @@
+{
+ "8": {
+  "passed": false,
+  "evidence": "16 query block(s); unbounded: 2 ['let lookback = 30d; let ioc_domains = dynamic([\"cdn-updates-', '---  ## 4. Which hunts become detections, and what has to ha']"
+ },
+ "3": {
+  "passed": true,
+  "evidence": "IOC lets: True; domain has_any on URL col: True; IP via in/==: True"
+ },
+ "4": {
+  "passed": true,
+  "evidence": "vendor-alert query present"
+ },
+ "2_hint": {
+  "passed": true,
+  "evidence": "sample-specific strings present somewhere in hunts.md: True (LLM must check whether a behaviour query relies on them solely)"
+ }
+}

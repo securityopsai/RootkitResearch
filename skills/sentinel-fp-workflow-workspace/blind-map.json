@@ -18,5 +18,10 @@
   "with_skill": "B",
   "old_skill": "A",
   "without_skill": "C"
+ },
+ "threat-report-to-hunt-pack": {
+  "with_skill": "A",
+  "old_skill": "C",
+  "without_skill": "B"
  }
 }
