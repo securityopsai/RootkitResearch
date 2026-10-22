@@ -633,7 +633,7 @@ Notes for the rule-builders:
 
 1. Push indicators now: SHA256, both domains, the IP (Defender XDR > Settings > Endpoints > Indicators; also Defender for Office URL indicator). Tag `PASTEJACK`, 60-day expiry, action = block + alert.
 2. Import the same IOCs into Sentinel TI so the built-in TI-map rules fire for non-MDE sources (proxy, DNS, firewall).
-3. Consider blocking `conhost.exe --headless` spawning `powershell.exe` via ASR is not possible directly; instead, confirm ASR rule "Block execution of potentially obfuscated scripts" and "Block process creations originating from PSExec and WMI" states, and consider Windows "Prevent access to Run" GPO for high-risk user groups.
+3. There is no ASR rule that blocks `conhost.exe --headless` -> `powershell.exe` directly. Instead, confirm the ASR rules "Block execution of potentially obfuscated scripts" and "Block JavaScript or VBScript from launching downloaded executable content" are in block mode, and consider the "Prevent access to Run" GPO (or Windows Terminal-only shells) for high-risk user groups.
 4. For any H09 device: isolate, collect investigation package, dump the scheduled task XML and `%APPDATA%\msbuild\`, reset the user's credentials and revoke refresh tokens, and force password rotation for anything saved in the browser.
 5. User comms: short notice about "verify you are human / paste this into Run" lures.
 

@@ -1,0 +1,28 @@
+{
+  "name": "empty",
+  "tables": {
+    "DeviceNetworkEvents": {
+      "schema": {
+        "Timestamp": "datetime",
+        "ReportId": "long",
+        "DeviceId": "string",
+        "DeviceName": "string",
+        "ActionType": "string",
+        "RemoteIP": "string",
+        "RemoteIPType": "string",
+        "RemotePort": "int",
+        "RemoteUrl": "string",
+        "Protocol": "string",
+        "InitiatingProcessFileName": "string",
+        "InitiatingProcessFolderPath": "string",
+        "InitiatingProcessSHA256": "string",
+        "InitiatingProcessCommandLine": "string",
+        "InitiatingProcessId": "long",
+        "InitiatingProcessAccountName": "string",
+        "InitiatingProcessAccountSid": "string"
+      },
+      "events": []
+    }
+  },
+  "expected_alerts": 0
+}

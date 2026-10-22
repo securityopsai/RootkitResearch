@@ -1,0 +1,131 @@
+// [ORG] CA-0001 - First-seen process accessing LSASS (fleet-wide)                       v1.0 2026-10-22
+// Platform: Defender XDR custom detection  |  Frequency: every 1 h  |  Lookback: 4 h (fixed XDR pair)
+// MITRE: TA0006 Credential Access / T1003.001 OS Credential Dumping: LSASS Memory
+//
+// DETECTION STRATEGY: a process image that has never opened a handle to lsass.exe anywhere in the fleet
+//   during the 30 d baseline does so now. Credential-dumping tools (Mimikatz, ProcDump-style dumpers,
+//   nanodump, custom loaders) are "new" by definition on first use; the long tail of legitimate LSASS
+//   readers (AV/EDR, csrss/wininit/svchost, backup agents) is learned from the baseline, not hard-coded.
+// THE MECHANIC: OpenProcess()/NtOpenProcess on lsass.exe -> DeviceEvents ActionType == "OpenProcessApiCall"
+//   (target process in FileName/FolderPath, caller in InitiatingProcess*). The MDE sensor records this
+//   call only for a sensitive-target set that includes lsass.exe.
+// THE RESILIENCE: key = normalised image path (+ PE CompanyName). Hash churn from software updates does
+//   not create a "new" key; a renamed, relocated or masqueraded binary does.
+// DATA: DeviceEvents / OpenProcessApiCall - retention assumed 30 d (advanced hunting) - sampled: no,
+//   but the sensor records a subset of OpenProcess calls (see rule.md, blind spots).
+// TP LIKELIHOOD WHEN IT FIRES: medium - new software rollouts, admin tooling and pilots are the BTP class.
+// COVERAGE CAVEAT: a tool already present in the 30 d baseline (prior undetected use, LOLBins such as
+//   taskmgr.exe/rundll32.exe/werfault.exe that touched LSASS benignly once) is silent. See rule.md.
+// DedupFields: DeviceId, ProcessKey   (re-validate whenever the final projection changes)
+//
+// ---- Rule contract (mirrors the custom detection metadata) ------------------------------------------
+let query_frequency = 1h;        // rule frequency
+let query_period    = 4h;        // XDR lookback paired with a 1 h frequency; the service evaluates it on
+                                 // ingestion_time(), so late-arriving events with old Timestamps still fire
+let query_wait      = 1h;        // ingestion-delay margin: an event may land this long after its Timestamp
+// ---- Tunables (each line states the FP it trades against) -------------------------------------------
+let BaselineDays = 30d;          // fleet baseline length, capped by 30 d advanced-hunting retention.
+                                 // Shorter = more keys look "new" (more BTP alerts). Longer needs a
+                                 // persisted baseline (watchlist/custom table), not a bigger window.
+let GuardGap = query_period + query_wait;
+                                 // baseline ends this long ago so an event inside the current lookback can
+                                 // never whitelist itself. Larger gap = a persistent new process re-alerts
+                                 // for longer; smaller than query_period = silent self-suppression.
+let MinBaselineKeys = 20;        // sanity floor: fewer distinct keys than this in the baseline means the
+                                 // tenant is too young or OpenProcessApiCall is not flowing - emit nothing
+                                 // rather than a 150-alert burst in which everything is "new".
+let MaxDevicesPerNewKey = 25;    // population filter: a new key on more devices than this inside one
+                                 // lookback is a software rollout (BTP), not an intrusion. Trades against a
+                                 // mass-deployed dumper (ransomware staging) - documented blind spot.
+let IncludeCompanyInKey = true;  // true: key = path + PE CompanyName (a binary dropped over a known path,
+                                 // or with changed metadata, fires). false: path only (fewer alerts when a
+                                 // vendor changes its CompanyName string).
+let RequireVmRead = false;       // true: alert only when the requested access mask includes
+                                 // PROCESS_VM_READ (0x0010); drops QUERY_LIMITED_INFORMATION probes (e.g.
+                                 // inventory agents) at the cost of handle-only reconnaissance. Fails open
+                                 // when the mask cannot be parsed. Validate the AdditionalFields shape in
+                                 // your tenant before enabling.
+// Begin environment-specific filter.
+// Exact ProcessKey values (output of ProcessKeyOf: lower-case, normalised path, "|company" suffix when
+// IncludeCompanyInKey is true) that may legitimately start touching LSASS without warning, e.g. an EDR/AV
+// pilot or a backup agent under staged rollout. Keep EMPTY unless a documented BTP exists; every entry is
+// a blind-spot line in rule.md. Prefer letting the baseline learn it after the first (BTP-closed) alert.
+let ExcludedProcessKeys = dynamic([]);
+// OPTION: trust callers by PE CompanyName (attacker-controllable metadata; default off / empty).
+let TrustedCompanyNames = dynamic([]);
+// End environment-specific filter.
+//
+// ---- Key construction (identical on baseline and recent side: baseline grain == join grain) ----------
+// Normalise before baselining: per-user profile dirs, version dirs, GUIDs and temp dirs otherwise make
+// every update or every user a "new" process.
+let NormalisePath = (p: string) {
+    replace_regex(
+      replace_regex(
+        replace_regex(
+          replace_regex(tolower(p), @'\\users\\[^\\]+\\', @'\\users\\<user>\\'),
+          @'\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?', '<guid>'),
+        @'\\(app-)?[0-9]+(\.[0-9]+){1,3}\\', @'\\<ver>\\'),
+      @'\\temp\\[^\\]+\\', @'\\temp\\<tmp>\\')
+};
+// MDE's InitiatingProcessFolderPath carries the full image path including the file name.
+let ProcessKeyOf = (folderPath: string, fileName: string, company: string) {
+    iff(IncludeCompanyInKey,
+        strcat(iff(isempty(folderPath), tolower(fileName), NormalisePath(folderPath)), "|", tolower(company)),
+        iff(isempty(folderPath), tolower(fileName), NormalisePath(folderPath)))
+};
+// ---- STEP 1: fleet-wide baseline of every image that touched LSASS, ending before the guard gap ------
+let Known = materialize(
+    DeviceEvents
+    | where Timestamp between (ago(BaselineDays) .. ago(GuardGap))   // baseline half: event-time bounds only
+    | where ActionType == "OpenProcessApiCall"
+    | where FileName =~ "lsass.exe"
+    | where isnotempty(InitiatingProcessFileName)
+    | extend ProcessKey = ProcessKeyOf(InitiatingProcessFolderPath, InitiatingProcessFileName, InitiatingProcessVersionInfoCompanyName)
+    | distinct ProcessKey);
+let BaselineSize = toscalar(Known | count);   // `count` always returns one row, so toscalar is safe on empty
+// ---- STEP 2: recent LSASS access, scoped on ingestion time only (no Timestamp filter on this half) ---
+let Recent =
+    DeviceEvents
+    | where ingestion_time() > ago(query_period)   // performance; also neutralises the 30 d first-run scan
+    | where ActionType == "OpenProcessApiCall"
+    | where FileName =~ "lsass.exe"
+    | where isnotempty(InitiatingProcessFileName)
+    | where tolower(InitiatingProcessVersionInfoCompanyName) !in~ (TrustedCompanyNames)
+    | extend ProcessKey = ProcessKeyOf(InitiatingProcessFolderPath, InitiatingProcessFileName, InitiatingProcessVersionInfoCompanyName)
+    | where ProcessKey !in~ (ExcludedProcessKeys)
+    | extend DesiredAccess = tolong(tostring(parse_json(AdditionalFields).DesiredAccess))
+    | where not(RequireVmRead) or isnull(DesiredAccess) or binary_and(DesiredAccess, 16) != 0;
+// ---- STEP 3: keys never seen in the baseline -----------------------------------------------------------
+let NewAccess = materialize(
+    Recent
+    | join kind=leftanti Known on ProcessKey);
+// ---- STEP 4: one row per (device, new key); fleet-wide population filter; XDR required columns -------
+NewAccess
+| summarize (Timestamp, ReportId, InitiatingProcessFolderPath, InitiatingProcessCommandLine, InitiatingProcessId,
+             InitiatingProcessCreationTime, InitiatingProcessSHA256, InitiatingProcessVersionInfoCompanyName,
+             InitiatingProcessVersionInfoProductName, InitiatingProcessVersionInfoOriginalFileName,
+             InitiatingProcessParentFileName, InitiatingProcessAccountSid, InitiatingProcessAccountName,
+             InitiatingProcessAccountDomain, TargetProcessPath)
+      = arg_min(Timestamp, ReportId, InitiatingProcessFolderPath, InitiatingProcessCommandLine, InitiatingProcessId,
+             InitiatingProcessCreationTime, InitiatingProcessSHA256, InitiatingProcessVersionInfoCompanyName,
+             InitiatingProcessVersionInfoProductName, InitiatingProcessVersionInfoOriginalFileName,
+             InitiatingProcessParentFileName, InitiatingProcessAccountSid, InitiatingProcessAccountName,
+             InitiatingProcessAccountDomain, FolderPath),
+    LastSeen = max(Timestamp),
+    EventCount = count(),
+    AccessMasks = make_set(DesiredAccess, 10),
+    CommandLines = make_set(InitiatingProcessCommandLine, 5)
+    by DeviceId, DeviceName, ProcessKey, InitiatingProcessFileName
+| join kind=inner (
+    NewAccess
+    | summarize FleetDeviceCount = dcount(DeviceId), FleetEventCount = count() by ProcessKey
+    | where FleetDeviceCount <= MaxDevicesPerNewKey
+  ) on ProcessKey
+| project-away ProcessKey1
+| extend BaselineKeyCount = BaselineSize
+| where BaselineKeyCount >= MinBaselineKeys
+| project-reorder Timestamp, DeviceId, DeviceName, InitiatingProcessAccountDomain, InitiatingProcessAccountName,
+    InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessCommandLine, InitiatingProcessParentFileName,
+    ProcessKey, FleetDeviceCount, FleetEventCount, EventCount, AccessMasks, InitiatingProcessSHA256,
+    InitiatingProcessVersionInfoCompanyName, InitiatingProcessVersionInfoProductName,
+    InitiatingProcessVersionInfoOriginalFileName, TargetProcessPath, LastSeen, BaselineKeyCount, ReportId
