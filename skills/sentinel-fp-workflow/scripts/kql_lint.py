@@ -127,10 +127,13 @@ def lint_query(text: str, platform: str = "auto", hunt: bool = False):
 
     # term-match checks run on the whole text so multi-line literal lists are seen
     full_nc = "\n".join((strip_strings_and_comments(l)[0] if False else l.split("//")[0] if l.count('"') % 2 == 0 and l.count("'") % 2 == 0 else l) for l in lines)
-    for m in re.finditer(r"\b(has_any|has_all|has|has_cs|contains|contains_cs|startswith|endswith)\s*\(?\s*((?:(?:@?\"[^\"]*\"|@?'[^']*')[\s,]*)+)", full_nc):
+    # list form: op ( "a", "b", ... ) may span lines; scalar form: op "a" takes exactly one literal
+    LIT = r"(?:@?\"[^\"]*\"|@?'[^']*')"
+    term_re = re.compile(r"\b(has_any|has_all|has|has_cs|contains|contains_cs|startswith|endswith)\s*(?:\(\s*((?:%s[\s,]*)+)\)|(%s))" % (LIT, LIT))
+    for m in term_re.finditer(full_nc):
         ln = full_nc.count("\n", 0, m.start()) + 1
         op = m.group(1)
-        terms = [a or b for a, b in re.findall(r"@?\"([^\"]*)\"|@?'([^']*)'", m.group(2))]
+        terms = [a or b for a, b in re.findall(r"@?\"([^\"]*)\"|@?'([^']*)'", m.group(2) or m.group(3) or "")]
         for t in terms:
             if op.startswith("has") and len(t.strip()) <= 3 and t.strip():
                 add(ln, "W006", "warn", f"`{op}` term \"{t}\" is <= 3 chars — not term-indexed (full scan) and matches noise")
@@ -288,6 +291,7 @@ SELFTEST_CASES = [
     ("W014", "xdr", False, 'DeviceEvents\n| where DeviceName !in ("ADD DEVICES HERE")'),
     ("W015", "xdr", False, 'DeviceProcessEvents\n| where ProcessCommandLine has_all ("/c","schtasks","/create","/sc","ONSTART","/tn","Sens Api","/f")'),
     ("W015", "xdr", False, 'DeviceProcessEvents\n| where ProcessCommandLine has_any ("vssadmin.exe delete shadows /all /quiet", "wmic.exe shadowcopy delete")'),
+    ("CLEAN", "xdr", False, 'DeviceProcessEvents\n| extend T = case(\n    FileName =~ "vssadmin.exe" and Canon contains "delete" and Canon contains "shadows",\n    "T1490 shadow copy deletion",\n    "other")\n| summarize (Timestamp, ReportId)=arg_max(Timestamp, ReportId) by DeviceId'),
     ("I007", "sentinel", False, 'AuditLogs\n| extend T = tostring(TargetResources[0].displayName)'),
     ("W015", "xdr", False, 'let Cmds = dynamic(["vssadmin.exe delete shadows /all /quiet", "wmic.exe shadowcopy delete"]);\nDeviceProcessEvents\n| where ProcessCommandLine has_any (Cmds)'),
     ("W016", "xdr", False, 'DeviceProcessEvents\n| where FileName == "runas.exe"'),
@@ -318,6 +322,11 @@ def selftest() -> int:
     for code, plat, hunt, q in SELFTEST_CASES:
         found, _ = lint_query(q, plat, hunt)
         codes = {f[1] for f in found}
+        if code == "CLEAN":
+            if any(f[2] in ("error", "warn") for f in found):
+                failed += 1
+                print(f"SELFTEST FAIL: expected no warnings for:\n{q}\n  got {sorted(codes)}")
+            continue
         if code not in codes:
             failed += 1
             print(f"SELFTEST FAIL: expected {code} for:\n{q}\n  got {sorted(codes)}")

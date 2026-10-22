@@ -1,0 +1,113 @@
+{
+  "expectations": [
+    {
+      "text": "review.md identifies the join without kind= (default innerunique dedup) as a problem",
+      "passed": true,
+      "evidence": "review.md #16: \"Join has no explicit `kind=` \u2014 default flavour is `innerunique`, which dedups the left side by `DeviceId` and silently drops rows\""
+    },
+    {
+      "text": "review.md identifies that TimeGenerated is the wrong time column for a Defender XDR (Advanced Hunting) query and/or that the Timestamp/TimeGenerated > ago(1h) filter on the recent window is wrong for an hourly custom detection",
+      "passed": true,
+      "evidence": "review.md #1: \"`TimeGenerated` is not an Advanced Hunting column \u2014 XDR tables expose `Timestamp`...\"; #2: \"Self-inflicted `| where TimeGenerated > ago(1h)` \u2014 the service pre-filters to the rule's lookback (hourly => 4 h, evaluated on `ingestion_time()`); a 1 h event-time filter fights that and silently drops late-arriving events.\" Both halves identified."
+    },
+    {
+      "text": "review.md identifies the full command-line string literals as brittle (argument order/quoting) and/or the 2\u20133 character has_any terms as unindexed/noisy",
+      "passed": true,
+      "evidence": "review.md #12: \"`has_any (Commands)` matches full, exact, ordered strings \u2014 attackers reorder and pad arguments ... so coverage is brittle\"; #11: \"Those three terms are <=3 characters, so they are not term-indexed \u2014 forces a full command-line scan\". Both halves identified."
+    },
+    {
+      "text": "review.md identifies the case-sensitive FileName == comparisons",
+      "passed": true,
+      "evidence": "review.md #20: \"Chained `FileName == ... or FileName == ...` is case-sensitive and un-indexed as a list \u2014 image casing varies (`VSSADMIN.EXE`), so use `FileName in~ (list)`\""
+    },
+    {
+      "text": "review.md identifies the positional index parse_json(AdditionalFields)[1].value as brittle",
+      "passed": true,
+      "evidence": "review.md #6: \"...parent process is already a first-class column (`InitiatingProcessFileName` / `InitiatingProcessCommandLine`), and positional `[1].value` on a JSON object is undefined behaviour.\" Also notes AdditionalFields is not a DeviceProcessEvents column."
+    },
+    {
+      "text": "review.md identifies that summarizing by DeviceName drops DeviceId and/or that the required Timestamp and ReportId columns are missing from the output",
+      "passed": true,
+      "evidence": "review.md #3: \"Required columns are destroyed by the final `summarize` \u2014 `Timestamp`, `ReportId` and `DeviceId` are not in the output\"; #4: \"Aggregates by `DeviceName` (display name) instead of `DeviceId`\". Both halves identified."
+    },
+    {
+      "text": "fixed.kql projects Timestamp, ReportId and DeviceId, every join states kind=, and every make_set/make_list is capped",
+      "passed": true,
+      "evidence": "Verified by reading fixed.kql (auto-grade agrees): `summarize arg_max(Timestamp, *), ... by DeviceId` then `| project Timestamp, ReportId, DeviceId, DeviceName, ...`. No `join` anywhere (kind= clause vacuous). Three make_set calls, all capped at 10: `make_set(Technique, 10)`, `make_set(ProcessCommandLine, 10)`, `make_set(InitiatingProcessFileName, 10)`. No make_list."
+    },
+    {
+      "text": "fixed.kql produces 0 errors and 0 warnings from the skill's scripts/kql_lint.py --platform xdr (programmatic check)",
+      "passed": true,
+      "evidence": "Re-run after fixing a linter false positive (scalar `contains \"x\"` followed by a case() label on the next line was parsed as a term list): `-- 0 error(s), 0 warning(s)`. Original result 0 errors / 3 spurious W015 warnings."
+    }
+  ],
+  "summary": {
+    "passed": 8,
+    "failed": 0,
+    "total": 8,
+    "pass_rate": 1.0
+  },
+  "claims": [
+    {
+      "claim": "fixed.kql is plausibly valid Advanced Hunting KQL",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Delimiters balanced (24/24 parens, 3/3 brackets, quotes balanced). All columns exist on DeviceProcessEvents incl. AccountUpn, AccountObjectId, ProcessUniqueId, InitiatingProcessUniqueId, InitiatingProcessParentFileName. `case()` with a default, `arg_max(Timestamp, *)`, `!in (dynamic)`, `replace_string`, `strcat` are valid. Minor gaps: no `ActionType == \"ProcessCreated\"` filter; `Technique` (from the arg_max row) and `Techniques` (set) are both projected, which is fine."
+    },
+    {
+      "claim": "fixed.kql would still fire on a single `vssadmin.exe delete shadows /all /quiet` execution",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Traced: FileName in~ ShadowTools -> Canon contains \"delete\" and \"shadows\" -> Technique = \"vssadmin delete shadows\" -> InitiatingProcessFolderPath (cmd.exe/explorer) not in Veeam/Commvault/Veritas/Backup Exec -> AccountKey not in empty list -> summarize by DeviceId -> EventCount 1 >= MinEvents 1 -> projected. Fires."
+    },
+    {
+      "claim": "The 3 lint warnings reflect real brittleness in fixed.kql",
+      "type": "quality",
+      "verified": false,
+      "evidence": "Inspected kql_lint.py line 130-142: the regex captures a run of string literals separated by whitespace/commas after `contains`, so the multi-line case() layout makes the label string on the next line look like a match term. The actual predicates use single tokens (\"delete\", \"shadows\", \"resize\", \"shadowstorage\", \"shadowcopy\")."
+    },
+    {
+      "claim": "Unit fixtures were built and the harness emitted three test queries without error, but could not be executed (no tenant access)",
+      "type": "process",
+      "verified": false,
+      "evidence": "No transcript and no fixture files in the run folder; cannot verify. Stated as unverifiable."
+    },
+    {
+      "claim": "Review provides a one-line reason per problem",
+      "type": "quality",
+      "verified": true,
+      "evidence": "25 numbered findings, each a bolded item followed by an em-dash reason."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [
+      "review.md states unit fixtures could not be executed (no tenant access) and asks the reader to keep them under tests/fixtures/<rule>/ and re-run on every exclusion change; the fixtures themselves are not in the output folder."
+    ],
+    "needs_review": [
+      "ExcludedInitiatingFolders ships pre-populated with four vendor terms (Veeam, Commvault, Veritas, Backup Exec) using has_any on the folder path; the review itself advises validating against 7 days of live data before go-live."
+    ],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "fixed.kql projects Timestamp, ReportId and DeviceId, every join states kind=, and every make_set/make_list is capped",
+        "reason": "The 'every make_set/make_list is capped' and 'every join states kind=' clauses are vacuously satisfied by a fixed.kql with no joins and no make_set (run C). A simpler but still correct query passes the same assertion as a richer one; consider asserting the aggregation shape you actually want (e.g. one row per DeviceId with arg_max/arg_min recovering Timestamp/ReportId) or dropping the vacuous clauses."
+      },
+      {
+        "assertion": "fixed.kql produces 0 errors and 0 warnings from the skill's scripts/kql_lint.py --platform xdr (programmatic check)",
+        "reason": "The W015 check in kql_lint.py regex-captures consecutive string literals across newlines, so a case() label string placed on the line after a `contains \"token\"` predicate is reported as a 'full command-line string' even though it is never matched against anything. Run B's 3 warnings are all of this kind; the assertion therefore measures linter-layout luck rather than detection quality. Consider either fixing the linter's capture or wording the assertion as '0 errors' plus a manual check for genuinely brittle literals."
+      },
+      {
+        "reason": "No assertion checks that fixed.kql still fires on the canonical true positive (one `vssadmin delete shadows /all /quiet`) or that it no longer requires Count > 3 / the SMB join. All three runs happen to get this right, but a 'fixed' query that kept the threshold would pass every assertion. A fixture-based TP/TN check via scripts/kql_test_harness.py would be far more discriminating."
+      },
+      {
+        "reason": "No assertion checks that fixed.kql removed the self-inflicted ago(1h) window or that it filters ActionType == \"ProcessCreated\" (run B omits the latter); both are explicitly taught by the skill."
+      },
+      {
+        "reason": "Assertions 1-6 are satisfied by a review that merely names the issue; they do not distinguish a correct one-line reason from a wrong one (e.g. run C's claim that `has \"-e\"` matches 'any command line containing the term e' is inaccurate but still passes assertion 3)."
+      }
+    ],
+    "overall": "Assertions 1-6 are presence checks on review.md and are reliably discriminating for the listed defects, but they accept any wording. Assertion 7 is partly vacuous and assertion 8 is at the mercy of a linter false positive. The most important outcome (the corrected rule actually detecting a single shadow-copy deletion) is not asserted at all."
+  }
+}

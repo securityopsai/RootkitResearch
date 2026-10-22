@@ -1,0 +1,103 @@
+{
+  "expectations": [
+    {
+      "text": "review.md identifies the join without kind= (default innerunique dedup) as a problem",
+      "passed": true,
+      "evidence": "review.md #9: \"Default `join` kind is `innerunique` — it de-duplicates the left side on `DeviceId` arbitrarily, silently discarding process events\". Names the default-kind dedup problem (and #8 covers the inner-join drop)."
+    },
+    {
+      "text": "review.md identifies that TimeGenerated is the wrong time column for a Defender XDR (Advanced Hunting) query and/or that the Timestamp/TimeGenerated > ago(1h) filter on the recent window is wrong for an hourly custom detection",
+      "passed": true,
+      "evidence": "review.md #1: \"`TimeGenerated` does not exist in Defender XDR advanced hunting — `DeviceProcessEvents` uses `Timestamp`...\"; #10: \"Explicit `ago(1h)` window is wrong for a scheduled custom detection — the platform scopes the lookback for the chosen frequency ... hard-coding 1 h creates gaps whenever a run is delayed\". Both halves identified."
+    },
+    {
+      "text": "review.md identifies the full command-line string literals as brittle (argument order/quoting) and/or the 2–3 character has_any terms as unindexed/noisy",
+      "passed": true,
+      "evidence": "review.md #5: \"Full-string command signatures are brittle — `vssadmin.exe delete shadows /all /quiet` only matches if the operator typed `.exe`, used that exact flag order and included `/quiet`\"; #13: \"`ProcessCommandLine has_any (\"-e\", \"-enc\", \"del\")` is unrelated and overly broad\" (the stated mechanism — that `-e` matches 'the term e' — is imprecise, but the noisy/broad finding is made). Both halves identified."
+    },
+    {
+      "text": "review.md identifies the case-sensitive FileName == comparisons",
+      "passed": true,
+      "evidence": "review.md #11: \"Case-sensitive `FileName ==` — Windows process names vary in case (`VSSADMIN.EXE`, `WMIC.exe`); `==` is case-sensitive, so use `=~` / `in~`.\""
+    },
+    {
+      "text": "review.md identifies the positional index parse_json(AdditionalFields)[1].value as brittle",
+      "passed": true,
+      "evidence": "review.md #16: \"`parse_json(AdditionalFields)[1].value` is wrong and unused — `AdditionalFields` is a JSON object, not an array, so `[1]` returns null; the parent process is already in `InitiatingProcessFileName`...\""
+    },
+    {
+      "text": "review.md identifies that summarizing by DeviceName drops DeviceId and/or that the required Timestamp and ReportId columns are missing from the output",
+      "passed": true,
+      "evidence": "review.md #3: \"Output lacks the mandatory custom-detection columns — the `summarize` drops `Timestamp`, `DeviceId` and `ReportId`\"; #18: \"Grouping by `DeviceName` instead of `DeviceId` — `DeviceName` is not unique/stable ... `DeviceId` is the entity key XDR uses\". Both halves identified."
+    },
+    {
+      "text": "fixed.kql projects Timestamp, ReportId and DeviceId, every join states kind=, and every make_set/make_list is capped",
+      "passed": true,
+      "evidence": "Verified by reading fixed.kql (auto-grade agrees): final `| project Timestamp, DeviceId, DeviceName, ReportId, ...`. No `join` and no `make_set`/`make_list` at all, so the kind= and cap clauses are satisfied vacuously (0 joins, 0 make_set/list). Passed on the literal assertion; see eval_feedback on vacuity."
+    },
+    {
+      "text": "fixed.kql produces 0 errors and 0 warnings from the skill's scripts/kql_lint.py --platform xdr (programmatic check)",
+      "passed": true,
+      "evidence": "Ran `python3 -I .../kql_lint.py --platform xdr C/fixed.kql`; final summary line: \"-- 0 error(s), 0 warning(s)\". One I014 info line (no time bound) is emitted, which is informational and not counted as a warning. Matches auto-grade."
+    }
+  ],
+  "summary": {
+    "passed": 8,
+    "failed": 0,
+    "total": 8,
+    "pass_rate": 1.0
+  },
+  "claims": [
+    {
+      "claim": "fixed.kql is plausibly valid Advanced Hunting KQL",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Delimiters balanced (31/31 parens, 4/4 brackets, quotes balanced). All columns exist on DeviceProcessEvents (ActionType, FileName, ProcessVersionInfoOriginalFileName, ProcessCommandLine, InitiatingProcessFolderPath/FileName/CommandLine/AccountName/ParentFileName/Id, Timestamp, DeviceId, DeviceName, ReportId, AccountDomain/Name/Sid, FolderPath, ProcessId, SHA256). `in~ (dynamic)`, `has`, `has_any`, `iff`, `tolower` are valid; verbatim `@\"\\Veeam\\\"` literals are legal. No summarize, so one row per event (XDR platform dedup on ReportId handles repeats). Header comment maps 'Process = ReportId' which is not an entity type, but it is only a comment."
+    },
+    {
+      "claim": "fixed.kql would still fire on a single `vssadmin.exe delete shadows /all /quiet` execution",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Traced: ActionType ProcessCreated -> FileName in~ RecoveryTools -> ToolName = \"vssadmin.exe\" -> ProcessCommandLine has \"delete\" and has \"shadows\" -> parent not in backup-agent folders/parents -> projected with Timestamp/DeviceId/ReportId. Fires with no threshold. Also covers wmic/wbadmin/bcdedit/diskshadow/PowerShell variants and `cmd /c vssadmin ...` (which would produce two rows, cmd and vssadmin)."
+    },
+    {
+      "claim": "`has \"-e\"` matches any command line containing the term `e` (review.md #13)",
+      "type": "factual",
+      "verified": false,
+      "evidence": "Imprecise: `has` tokenises both sides, so `-e` becomes the single-character term `e`, which Kusto does not term-index (hence a scan) and which matches as a whole term only; the conclusion (unindexed, noisy) is right but the mechanism as stated is loose. Does not affect the assertion verdict."
+    },
+    {
+      "claim": "Review provides a one-line reason per problem",
+      "type": "quality",
+      "verified": true,
+      "evidence": "22 numbered findings, each a bolded item followed by an em-dash reason."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "fixed.kql projects Timestamp, ReportId and DeviceId, every join states kind=, and every make_set/make_list is capped",
+        "reason": "The 'every make_set/make_list is capped' and 'every join states kind=' clauses are vacuously satisfied by a fixed.kql with no joins and no make_set (run C). A simpler but still correct query passes the same assertion as a richer one; consider asserting the aggregation shape you actually want (e.g. one row per DeviceId with arg_max/arg_min recovering Timestamp/ReportId) or dropping the vacuous clauses."
+      },
+      {
+        "assertion": "fixed.kql produces 0 errors and 0 warnings from the skill's scripts/kql_lint.py --platform xdr (programmatic check)",
+        "reason": "The W015 check in kql_lint.py regex-captures consecutive string literals across newlines, so a case() label string placed on the line after a `contains \"token\"` predicate is reported as a 'full command-line string' even though it is never matched against anything. Run B's 3 warnings are all of this kind; the assertion therefore measures linter-layout luck rather than detection quality. Consider either fixing the linter's capture or wording the assertion as '0 errors' plus a manual check for genuinely brittle literals."
+      },
+      {
+        "reason": "No assertion checks that fixed.kql still fires on the canonical true positive (one `vssadmin delete shadows /all /quiet`) or that it no longer requires Count > 3 / the SMB join. All three runs happen to get this right, but a 'fixed' query that kept the threshold would pass every assertion. A fixture-based TP/TN check via scripts/kql_test_harness.py would be far more discriminating."
+      },
+      {
+        "reason": "No assertion checks that fixed.kql removed the self-inflicted ago(1h) window or that it filters ActionType == \"ProcessCreated\" (run B omits the latter); both are explicitly taught by the skill."
+      },
+      {
+        "reason": "Assertions 1-6 are satisfied by a review that merely names the issue; they do not distinguish a correct one-line reason from a wrong one (e.g. run C's claim that `has \"-e\"` matches 'any command line containing the term e' is inaccurate but still passes assertion 3)."
+      }
+    ],
+    "overall": "Assertions 1-6 are presence checks on review.md and are reliably discriminating for the listed defects, but they accept any wording. Assertion 7 is partly vacuous and assertion 8 is at the mercy of a linter false positive. The most important outcome (the corrected rule actually detecting a single shadow-copy deletion) is not asserted at all."
+  }
+}
