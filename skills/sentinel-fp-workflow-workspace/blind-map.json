@@ -8,5 +8,15 @@
   "with_skill": "A",
   "old_skill": "B",
   "without_skill": "C"
+ },
+ "xdr-first-seen-lsass-access": {
+  "with_skill": "A",
+  "old_skill": "C",
+  "without_skill": "B"
+ },
+ "sentinel-password-spray-rule": {
+  "with_skill": "B",
+  "old_skill": "A",
+  "without_skill": "C"
  }
 }

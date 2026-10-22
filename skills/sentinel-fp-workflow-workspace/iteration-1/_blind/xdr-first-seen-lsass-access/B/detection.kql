@@ -1,0 +1,100 @@
+// =============================================================================
+// Defender XDR custom detection
+// Name     : First-seen process accessing LSASS (fleet-wide)
+// Schedule : Every hour  (XDR evaluates the last 4h of data for hourly rules)
+// Source   : DeviceEvents / ActionType == "OpenProcessApiCall" targeting lsass.exe
+// Output   : Must carry Timestamp, ReportId, DeviceId (XDR custom detection requirement)
+// MITRE    : T1003.001 OS Credential Dumping: LSASS Memory (primary); T1055 (secondary)
+//
+// Logic in one sentence: build the set of process identities that opened a
+// handle to lsass.exe anywhere in the estate during the baseline window
+// (excluding the current detection window), then alert on any lsass access in
+// the detection window whose process identity is not in that set.
+// =============================================================================
+
+// ------------------------------- TUNING KNOBS --------------------------------
+let baseline_window          = 30d;    // how far back "ever seen" looks. Advanced Hunting keeps 30d max.
+let detection_window         = 4h;     // must be >= XDR lookback for the chosen frequency (hourly = 4h).
+let baseline_on_hash         = false;  // false = identity is the normalized image path (survives updates).
+                                       // true  = identity is InitiatingProcessSHA256 (catches masquerading, noisier on every patch).
+let require_sensitive_access = true;   // only alert when the requested access mask includes rights that can
+                                       // read/write memory, duplicate handles, create threads/processes.
+                                       // false = alert on ANY first-seen lsass open (noisier, broader).
+let rollout_device_threshold = 25;     // if a brand-new process touches lsass on MORE than N devices in the
+                                       // window it is almost always a software rollout -> suppress. 0 = disable.
+let allowlist_exact = dynamic([        // normalized, lower-case full image paths to always ignore (see rule.md)
+    // @"c:\program files\vendor\agent\agent.exe"
+]);
+let allowlist_regex = "";              // optional single RE2 regex over the normalized path; "" = disabled
+                                       // e.g. @"^c:\\windows\\temp\\nessus_[0-9a-z]+\\nessusd\.exe$"
+
+// Access-mask bits that matter for credential theft / injection on a process object:
+//   0x0002 PROCESS_CREATE_THREAD   0x0008 PROCESS_VM_OPERATION  0x0010 PROCESS_VM_READ
+//   0x0020 PROCESS_VM_WRITE        0x0040 PROCESS_DUP_HANDLE    0x0080 PROCESS_CREATE_PROCESS
+// PROCESS_ALL_ACCESS (0x1FFFFF) contains all of them. GENERIC_* (0xF0000000) map onto them too.
+let sensitive_bits = 0xFA;
+let generic_bits   = 0xF0000000;
+
+// ----------------------------- BASE EVENT SET --------------------------------
+let lsass_access = materialize(
+    DeviceEvents
+    | where Timestamp > ago(baseline_window)
+    | where ActionType == "OpenProcessApiCall"
+    | where FileName =~ "lsass.exe"
+    // Only the real LSASS. A process *named* lsass.exe elsewhere is a masquerading case for a different rule.
+    | where isempty(FolderPath) or FolderPath =~ @"C:\Windows\System32\lsass.exe"
+    | where isnotempty(InitiatingProcessFolderPath) or isnotempty(InitiatingProcessSHA256)
+    // --- Normalize the image path so per-user and per-version folders do not look "new" ---
+    | extend NormalizedPath = tolower(InitiatingProcessFolderPath)
+    //   c:\users\<anyone>\...                      -> c:\users\*\...
+    | extend NormalizedPath = replace_regex(NormalizedPath, @"^c:\\users\\[^\\]+\\", @"c:\\users\\*\\")
+    //   \4.18.24090.11-0\ , \1.2.3\ , \2024-10\    -> \<ver>\   (e.g. Defender Platform folders)
+    | extend NormalizedPath = replace_regex(NormalizedPath, @"\\[0-9][0-9._-]*\\", @"\\<ver>\\")
+    //   \{guid}\ or \guid\                         -> \<guid>\  (MSI / ClickOnce / updater staging dirs)
+    | extend NormalizedPath = replace_regex(NormalizedPath, @"\\\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?\\", @"\\<guid>\\")
+    | extend ProcessKey = iff(baseline_on_hash, tolower(InitiatingProcessSHA256), NormalizedPath)
+    | where isnotempty(ProcessKey)
+);
+
+// ------------------------------- BASELINE ------------------------------------
+// Everything that touched lsass before the detection window = "known".
+// NOTE: baseline deliberately uses ALL access masks, so a known process that
+// escalates to VM_READ is NOT "new" (documented gap in rule.md).
+let known_processes =
+    lsass_access
+    | where Timestamp <= ago(detection_window)
+    | distinct ProcessKey;
+
+// ------------------------------- DETECTION -----------------------------------
+lsass_access
+| where Timestamp > ago(detection_window)
+| join kind=leftanti known_processes on ProcessKey
+// --- Decode requested access ---
+| extend DesiredAccess = tolong(parse_json(AdditionalFields).DesiredAccess)
+| extend SensitiveAccess = iff(isnull(DesiredAccess), bool(null),
+                               binary_and(DesiredAccess, sensitive_bits) != 0 or binary_and(DesiredAccess, generic_bits) != 0)
+// Keep rows with unknown access mask rather than silently dropping them.
+| where not(require_sensitive_access) or isnull(SensitiveAccess) or SensitiveAccess == true
+// --- Allowlists (apply AFTER baseline so an allowlisted tool is still counted as "seen") ---
+| where not(NormalizedPath in~ (allowlist_exact))
+| where isempty(allowlist_regex) or not(NormalizedPath matches regex allowlist_regex)
+// --- One alert per new process identity per run (fleet-wide), anchored on the earliest event ---
+| summarize arg_min(Timestamp, *),
+            EventCount  = count(),
+            DeviceCount = dcount(DeviceId),
+            Devices     = make_set(DeviceName, 10),
+            Accounts    = make_set(strcat(InitiatingProcessAccountDomain, @"\", InitiatingProcessAccountName), 10),
+            AccessMasks = make_set(DesiredAccess, 10)
+    by ProcessKey
+// --- Rollout suppression: a genuinely new tool on many hosts within 4h is almost always deployment, not an attacker ---
+| where rollout_device_threshold == 0 or DeviceCount <= rollout_device_threshold
+| extend DesiredAccessHex = strcat("0x", toupper(tohex(DesiredAccess)))
+| extend RuleName = "First-seen process accessing LSASS (fleet-wide)"
+| project Timestamp, ReportId, DeviceId, DeviceName,
+          ProcessKey, NormalizedPath,
+          InitiatingProcessFolderPath, InitiatingProcessFileName, InitiatingProcessSHA256,
+          InitiatingProcessCommandLine, InitiatingProcessParentFileName,
+          InitiatingProcessVersionInfoCompanyName, InitiatingProcessVersionInfoProductName,
+          InitiatingProcessAccountDomain, InitiatingProcessAccountName, InitiatingProcessAccountSid, InitiatingProcessAccountUpn,
+          DesiredAccess, DesiredAccessHex, SensitiveAccess,
+          EventCount, DeviceCount, Devices, Accounts, AccessMasks, RuleName

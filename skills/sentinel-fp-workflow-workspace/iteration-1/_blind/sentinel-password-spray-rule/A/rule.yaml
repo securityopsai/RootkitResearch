@@ -1,0 +1,191 @@
+id: 13c338b8-95b0-4f40-880a-576dafd8b8cf
+name: Password spray against Entra ID from a single source IP
+description: |
+  Detects password spray against Entra ID (T1110.003): one source IP producing wrong-password
+  sign-in failures across many DISTINCT accounts inside the lookback window, where failures
+  dominate that IP's password evaluations. Accounts for which the same IP got a valid-credential
+  outcome (success, MFA prompt, CA block, expired password) are surfaced as "hits" and raise the
+  alert severity to High - those accounts are the ones to reset first.
+
+  Data: SigninLogs (Entra interactive user sign-ins, which is where ROPC and legacy-auth
+  spray lands). AADNonInteractiveUserSignInLogs is deliberately out of scope (token refresh,
+  no password evaluation). Federated domains (AD FS / 3rd-party IdP) validate passwords
+  outside Entra and are NOT covered by this rule.
+
+  Logic:
+    1. Keep only sign-ins whose ResultType is a wrong-password code (FailureCodes) or a
+       password-accepted code (ValidCredentialCodes). ResultType is a string column.
+    2. Aggregate per IPAddress: distinct accounts with a failure, failure/hit counts, hit users.
+    3. Alert when DistinctFailedUsers >= MinDistinctUsers (10) AND
+       FailureRatio >= MinFailureRatio (0.5) AND the IP's last failure is still recent
+       (RunFrequency + IngestionDelayAllowance), so a spray that already stopped is not
+       re-alerted on every hourly run while it ages out of the 4h window.
+    4. Drop IPs in ExcludedSourceCidrs (empty by default; swap to a watchlist, see query).
+
+  Tunables are all `let` statements at the top of the query. Two of them are COUPLED to this
+  file's schedule and must be changed together:
+    - LookbackWindow (4h)  == queryPeriod PT4H
+    - RunFrequency   (1h)  == queryFrequency PT1H
+
+  Expected noise and first tuning moves:
+    - Corporate NAT / VPN egress IPs after a password-rotation or Monday-morning login wave:
+      normally suppressed by the failure ratio (those IPs also carry many successes). If not,
+      add the CIDR to ExcludedSourceCidrs / the watchlist - never raise MinDistinctUsers for
+      one site.
+    - Small tenants: lower MinDistinctUsers to 5. Very large tenants: raise toward 20.
+    - Legacy auth (ClientApps shows IMAP4/POP3/SMTP/"Other clients") from an unknown IP is
+      almost never benign - treat as TP even at low counts.
+
+  Output per alert: one row per source IP, with IP entity, first hit account as Account entity,
+  and custom details (counts, ratio, sampled targeted users, hit users, apps, client apps, user
+  agents, locations, result types). Alerts from the same IP are grouped into one incident for
+  12h. Alert cap is 150 results per run (Sentinel AlertPerResult limit).
+
+  Validate before enabling: run the query in Logs over the last 7 days with
+  `where TimeGenerated > ago(7d)` replacing the LookbackWindow filter and the LastFailure guard
+  removed; review the top IPs by DistinctFailedUsers for egress IPs that need exclusion.
+severity: Medium
+status: Available
+requiredDataConnectors:
+  - connectorId: AzureActiveDirectory
+    dataTypes:
+      - SigninLogs
+queryFrequency: PT1H
+queryPeriod: PT4H
+triggerOperator: gt
+triggerThreshold: 0
+tactics:
+  - CredentialAccess
+relevantTechniques:
+  - T1110.003
+query: |
+  // ---------------- Tunables (change here, nowhere else) ----------------
+  let LookbackWindow = 4h;             // MUST equal queryPeriod (PT4H)
+  let RunFrequency = 1h;               // MUST equal queryFrequency (PT1H)
+  let IngestionDelayAllowance = 30m;   // Entra sign-in logs typically land 5-30 min late
+  let MinDistinctUsers = 10;           // distinct accounts with a wrong-password failure from one IP (inclusive)
+  let MinFailureRatio = 0.5;           // failures / (failures + valid-credential outcomes), 0..1 (inclusive)
+  let MaxListedUsers = 50;             // cap on usernames carried into the alert
+  // Entra ResultType codes where the password was WRONG (the spray signal). ResultType is a string.
+  //   50126 invalid username or password, 50053 account locked / IP blocked (smart lockout), 50056 invalid or null password
+  let FailureCodes = dynamic(["50126", "50053", "50056"]);
+  // Entra ResultType codes where the password was RIGHT but the flow stopped later (a spray "hit").
+  //   0 success, 50055 password expired, 50072 MFA enrollment required, 50074/50076 MFA required,
+  //   50140 keep-me-signed-in interrupt, 53003/530032 blocked by Conditional Access
+  let ValidCredentialCodes = dynamic(["0", "50055", "50072", "50074", "50076", "50140", "53003", "530032"]);
+  // Known-good egress IPv4 CIDRs (corporate NAT, VPN concentrators). Empty list = no exclusion.
+  // Preferred once the watchlist exists (schema: Entity, EntityType, RuleScope, ExpiryDate, ...):
+  //   let ExcludedSourceCidrs = toscalar(_GetWatchlist('FP_Exclusions')
+  //       | where EntityType == "ip" and RuleScope in ("*", "EntraPasswordSpray")
+  //       | summarize make_list(Entity));
+  let ExcludedSourceCidrs = dynamic([]);
+  // ---------------- Detection ----------------
+  SigninLogs
+  | where TimeGenerated > ago(LookbackWindow)
+  | where ResultType in (FailureCodes) or ResultType in (ValidCredentialCodes)
+  | where isnotempty(IPAddress) and isnotempty(UserPrincipalName)
+  | extend IsFailure = ResultType in (FailureCodes)
+  | extend Account = tolower(UserPrincipalName)
+  | summarize
+      FirstSeen = min(TimeGenerated),
+      LastSeen = max(TimeGenerated),
+      LastFailure = maxif(TimeGenerated, IsFailure),
+      FailedAttempts = countif(IsFailure),
+      DistinctFailedUsers = dcountif(Account, IsFailure),
+      HitAttempts = countif(not(IsFailure)),
+      HitUsers = make_set_if(Account, not(IsFailure), MaxListedUsers),
+      TargetedUsersSample = make_set_if(Account, IsFailure, MaxListedUsers),
+      ResultTypes = make_set(ResultType, 10),
+      Apps = make_set(AppDisplayName, 10),
+      ClientApps = make_set(ClientAppUsed, 10),
+      UserAgents = make_set(UserAgent, 10),
+      Locations = make_set(Location, 5)
+      by IPAddress
+  // Thresholds (both inclusive). Denominator is always >= 1: every surviving row is a failure or a hit.
+  | where DistinctFailedUsers >= MinDistinctUsers
+  | extend FailureRatio = round(todouble(FailedAttempts) / (FailedAttempts + HitAttempts), 2)
+  | where FailureRatio >= MinFailureRatio
+  // Only alert while the IP is still active; prevents re-alerting a finished spray on every run
+  | where LastFailure > ago(RunFrequency + IngestionDelayAllowance)
+  // Source exclusion, applied after aggregation (cheap). IPv6 sources are never excluded (function returns null).
+  | extend IsExcludedSource = iff(array_length(ExcludedSourceCidrs) == 0, false,
+      coalesce(ipv4_is_in_any_range(IPAddress, ExcludedSourceCidrs), false))
+  | where not(IsExcludedSource)
+  // ---------------- Presentation / entities ----------------
+  | extend HitUserCount = coalesce(array_length(HitUsers), 0)
+  | extend FirstHitUser = tostring(HitUsers[0])
+  | extend HitAccountName = tostring(split(FirstHitUser, "@")[0]),
+           HitUPNSuffix = tostring(split(FirstHitUser, "@")[1])
+  | extend Severity = iff(HitUserCount > 0, "High", "Medium")
+  | extend HitUsers = tostring(HitUsers),
+           TargetedUsersSample = tostring(TargetedUsersSample),
+           ResultTypes = tostring(ResultTypes),
+           Apps = tostring(Apps),
+           ClientApps = tostring(ClientApps),
+           UserAgents = tostring(UserAgents),
+           Locations = tostring(Locations)
+  | project
+      IPAddress,
+      FirstSeen,
+      LastSeen,
+      FailedAttempts,
+      DistinctFailedUsers,
+      HitAttempts,
+      HitUserCount,
+      FailureRatio,
+      Severity,
+      FirstHitUser,
+      HitAccountName,
+      HitUPNSuffix,
+      HitUsers,
+      TargetedUsersSample,
+      ResultTypes,
+      Apps,
+      ClientApps,
+      UserAgents,
+      Locations
+  | order by HitUserCount desc, DistinctFailedUsers desc
+entityMappings:
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: IPAddress
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: HitAccountName
+      - identifier: UPNSuffix
+        columnName: HitUPNSuffix
+customDetails:
+  FailedAttempts: FailedAttempts
+  DistinctFailedUsers: DistinctFailedUsers
+  FailureRatio: FailureRatio
+  HitUserCount: HitUserCount
+  HitUsers: HitUsers
+  TargetedUsersSample: TargetedUsersSample
+  FirstSeen: FirstSeen
+  LastSeen: LastSeen
+  ClientApps: ClientApps
+  Apps: Apps
+  UserAgents: UserAgents
+  Locations: Locations
+  ResultTypes: ResultTypes
+alertDetailsOverride:
+  alertDisplayNameFormat: "Password spray from {{IPAddress}}: {{DistinctFailedUsers}} accounts targeted, {{HitUserCount}} valid-credential hits"
+  alertDescriptionFormat: "Source {{IPAddress}} generated {{FailedAttempts}} wrong-password sign-in failures across distinct Entra ID accounts (failure ratio {{FailureRatio}}). Accounts listed in HitUsers had their password accepted from this IP and should be treated as compromised until proven otherwise."
+  alertSeverityColumnName: Severity
+eventGroupingSettings:
+  aggregationKind: AlertPerResult
+incidentConfiguration:
+  createIncident: true
+  groupingConfiguration:
+    enabled: true
+    reopenClosedIncident: false
+    lookbackDuration: PT12H
+    matchingMethod: Selected
+    groupByEntities:
+      - IP
+    groupByAlertDetails: []
+    groupByCustomDetails: []
+version: 1.0.0
+kind: Scheduled

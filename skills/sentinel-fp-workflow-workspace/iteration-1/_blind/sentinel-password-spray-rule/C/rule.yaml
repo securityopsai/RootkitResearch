@@ -1,0 +1,125 @@
+id: 7c2f4a1e-9b3d-4e6a-a8f1-5d0c2b7e9a41
+name: Password spray against Entra ID from a single source IP
+description: |
+  'Identifies a single source IP that fails password authentication against many distinct Entra ID accounts
+  within a short window (interactive sign-ins, SigninLogs). Password spray tries one or a few common passwords
+  across many accounts, so the signature is a high count of distinct targeted users with few attempts each.
+  Only result codes where the password was NOT accepted are counted as spray attempts (50126, 50056, 50034,
+  50053, 50057, 50064). Result codes where the password WAS accepted but the sign-in was then interrupted by
+  MFA, Conditional Access or password expiry (e.g. 50074, 50076, 53003, 50055) are surfaced separately as
+  "password accepted" hits and raise the alert severity to High, because they indicate a guessed credential.
+  To suppress shared corporate egress / VPN NAT addresses, the IP is only reported when failed accounts make up
+  at least 70% of all accounts seen from that IP in the window. Thresholds, the failure ratio and an IP
+  allowlist are exposed as let-variables at the top of the query.
+  Scope: interactive sign-ins only. Most spray traffic also lands in AADNonInteractiveUserSignInLogs; deploy a
+  sibling rule on that table if it is ingested in your workspace.
+  Window: runs hourly over a 2-hour lookback so a spray that straddles an hour boundary is not split below
+  threshold. A spray that lasts more than an hour will fire on consecutive runs; alerts are grouped into one
+  incident per source IP for 6 hours.'
+severity: Medium
+status: Available
+requiredDataConnectors:
+  - connectorId: AzureActiveDirectory
+    dataTypes:
+      - SigninLogs
+queryFrequency: 1h
+queryPeriod: 2h
+triggerOperator: gt
+triggerThreshold: 0
+tactics:
+  - CredentialAccess
+relevantTechniques:
+  - T1110
+query: |
+  // Password spray against Entra ID from a single source IP (SigninLogs = interactive sign-ins only).
+  // Sentinel applies the queryPeriod time filter (2h) automatically; do not add a hard-coded ago() filter here
+  // unless you also change queryPeriod, or the two will silently disagree.
+  // ----- Tunables: start conservative, review a week of results, then lower if needed ----------------------
+  let MinTargetedUsers    = 10;           // distinct accounts with a password failure from one IP in the window
+  let MinFailedSignIns    = 15;           // total password failures from that IP in the window
+  let MinFailedUserShare  = 0.7;          // failed accounts / all accounts seen from the IP; filters shared NAT/VPN egress
+  let AllowedSourceIPs    = dynamic([]);  // authorised scanner / pentest / red-team IPs, e.g. dynamic(["203.0.113.10"])
+  // ----- Result codes: password NOT accepted (counted as spray attempts) -------------------------------------
+  //   50126 invalid username or password   50056 invalid or null password   50034 user does not exist in tenant
+  //   50053 account locked (smart lockout)  50057 user account disabled      50064 credential validation failed
+  let PasswordFailureCodes  = dynamic([50126, 50056, 50034, 50053, 50057, 50064]);
+  // ----- Result codes: password WAS accepted, sign-in may still have been interrupted/blocked afterwards -----
+  //   0 success  50055/50144 password expired  50074/50076/50079/50072 MFA required or not enrolled
+  //   53000/53001/53003 blocked by Conditional Access  50158 external security challenge  50140 KMSI interrupt
+  let PasswordAcceptedCodes = dynamic([0, 50055, 50144, 50074, 50076, 50079, 50072, 53000, 53001, 53003, 50158, 50140]);
+  SigninLogs
+  | where isnotempty(IPAddress) and isnotempty(UserPrincipalName)
+  | where IPAddress !in (AllowedSourceIPs)
+  | extend ErrorCode = toint(ResultType)
+  | extend IsPasswordFailure  = ErrorCode in (PasswordFailureCodes),
+           IsPasswordAccepted = ErrorCode in (PasswordAcceptedCodes)
+  | where IsPasswordFailure or IsPasswordAccepted
+  | extend User = tolower(UserPrincipalName)
+  | summarize
+      StartTime                    = min(TimeGenerated),
+      EndTime                      = max(TimeGenerated),
+      FailedSignInCount            = countif(IsPasswordFailure),
+      TargetedUserCount            = dcountif(User, IsPasswordFailure, 4),
+      PasswordAcceptedUserCount    = dcountif(User, IsPasswordAccepted, 4),
+      TargetedUsersSample          = make_set_if(User, IsPasswordFailure, 20),
+      PasswordAcceptedUsers        = make_set_if(User, IsPasswordAccepted, 20),
+      FailureResultTypes           = make_set_if(ErrorCode, IsPasswordFailure, 10),
+      AcceptedResultTypes          = make_set_if(ErrorCode, IsPasswordAccepted, 10),
+      ClientApps                   = make_set(ClientAppUsed, 10),
+      TargetApplications           = make_set(AppDisplayName, 10),
+      UserAgents                   = make_set(UserAgent, 5),
+      Countries                    = make_set(Location, 5),
+      TrustedNamedLocationSignIns  = countif(NetworkLocationDetails has "trustedNamedLocation"),
+      AutonomousSystemNumber       = take_any(AutonomousSystemNumber)
+      by IPAddress
+  | where TargetedUserCount >= MinTargetedUsers and FailedSignInCount >= MinFailedSignIns
+  | extend AvgAttemptsPerUser = round(todouble(FailedSignInCount) / TargetedUserCount, 1),
+           FailedUserShare    = round(todouble(TargetedUserCount) / (TargetedUserCount + PasswordAcceptedUserCount), 2)
+  | where FailedUserShare >= MinFailedUserShare
+  | extend Severity                 = iff(PasswordAcceptedUserCount > 0, "High", "Medium"),
+           FromTrustedNamedLocation = TrustedNamedLocationSignIns > 0
+  | project-away TrustedNamedLocationSignIns
+  // Most important rows first: Sentinel creates at most 150 alerts per run
+  | order by PasswordAcceptedUserCount desc, TargetedUserCount desc, FailedSignInCount desc
+entityMappings:
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: IPAddress
+customDetails:
+  StartTime: StartTime
+  EndTime: EndTime
+  FailedSignIns: FailedSignInCount
+  TargetedUsers: TargetedUserCount
+  AvgAttemptsPerUser: AvgAttemptsPerUser
+  FailedUserShare: FailedUserShare
+  PasswordAcceptedUsers: PasswordAcceptedUserCount
+  PasswordAcceptedUPNs: PasswordAcceptedUsers
+  TargetedUPNsSample: TargetedUsersSample
+  FailureResultTypes: FailureResultTypes
+  AcceptedResultTypes: AcceptedResultTypes
+  ClientApps: ClientApps
+  TargetApplications: TargetApplications
+  UserAgents: UserAgents
+  Countries: Countries
+  ASN: AutonomousSystemNumber
+  FromTrustedNamedLocation: FromTrustedNamedLocation
+alertDetailsOverride:
+  alertDisplayNameFormat: 'Password spray from {{IPAddress}} against {{TargetedUserCount}} Entra ID accounts'
+  alertDescriptionFormat: 'Source IP {{IPAddress}} failed password authentication {{FailedSignInCount}} times across {{TargetedUserCount}} distinct accounts. Check the PasswordAcceptedUPNs custom detail: any account listed there accepted the password and should be treated as compromised (reset password, revoke sessions, review MFA).'
+  alertSeverityColumnName: Severity
+eventGroupingSettings:
+  aggregationKind: AlertPerResult
+incidentConfiguration:
+  createIncident: true
+  groupingConfiguration:
+    enabled: true
+    reopenClosedIncident: false
+    lookbackDuration: 6h
+    matchingMethod: Selected
+    groupByEntities:
+      - IP
+    groupByAlertDetails: []
+    groupByCustomDetails: []
+version: 1.0.0
+kind: Scheduled

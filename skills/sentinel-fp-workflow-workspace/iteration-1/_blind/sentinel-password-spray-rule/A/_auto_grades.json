@@ -1,0 +1,34 @@
+{
+ "1": {
+  "passed": true,
+  "evidence": "queryFrequency=PT1H queryPeriod=PT4H ingestion_time=False"
+ },
+ "2": {
+  "passed": false,
+  "evidence": "ingestion_time()/wait/delay absent"
+ },
+ "3": {
+  "passed": true,
+  "evidence": "codes in let: True; interrupt codes present: True; failure codes present: True (LLM: confirm they are classified, not lumped)"
+ },
+ "4": {
+  "passed": false,
+  "evidence": "dcount of users: False; by IPAddress: True; threshold in let: True"
+ },
+ "5": {
+  "passed": true,
+  "evidence": "IP columnName=IPAddress; present in query: True"
+ },
+ "6": {
+  "passed": true,
+  "evidence": "7 make_set/list call(s), 0 uncapped"
+ },
+ "7": {
+  "passed": true,
+  "evidence": "CredentialAccess=True T1110.003=True"
+ },
+ "8": {
+  "passed": true,
+  "evidence": "grouping/suppression/enrichment keys present"
+ }
+}

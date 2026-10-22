@@ -1,0 +1,159 @@
+id: da27f4cb-4fd5-41eb-9fbc-ff02e27d764e
+name: Password spray against Entra ID from a single source IP
+description: |
+  Identifies a password spray against Entra ID: one source IP generating invalid-password failures (ResultType 50126, 50053, 50034)
+  against at least 10 distinct accounts in the hourly run window, with at most 3 failures per sprayed account (more is brute force,
+  left to a separate rule) and more failures than successes from that IP (self-tunes corporate egress NAT).
+  Accounts whose password was accepted from the same IP (success or an MFA / Conditional Access interrupt code) are listed in
+  CredentialValidatedAccounts and raise the severity to High; reset those passwords and revoke sessions first.
+  One alert per source IP; incidents are grouped by IP over 5h so a multi-hour spray stays one incident.
+  Blind spots: non-interactive flows (AADNonInteractiveUserSignInLogs), sprays spread across many IPs or slower than 10 accounts
+  per hour, and sprays launched from inside an excluded corporate egress range.
+  Ref: https://attack.mitre.org/techniques/T1110/003/
+severity: Medium
+requiredDataConnectors:
+  - connectorId: AzureActiveDirectory
+    dataTypes:
+      - SigninLogs
+queryFrequency: 1h
+queryPeriod: 2h
+triggerOperator: gt
+triggerThreshold: 0
+tactics:
+  - CredentialAccess
+relevantTechniques:
+  - T1110.003
+query: |
+  // Password spray against Entra ID from a single source IP (SigninLogs, interactive sign-ins).
+  // INTENT: one source IP tries one or a few passwords against MANY accounts (MITRE T1110.003 Password Spraying).
+  // Shape asserted: many distinct accounts with a LOW number of invalid-password failures each, from one IP,
+  // where failures outnumber successes. Interrupt codes (MFA / Conditional Access) mean the password was
+  // accepted, so accounts that reached them are surfaced as the response priority and raise the severity.
+  //
+  // ---- Rule contract (mirror of the YAML metadata; keep in sync) ----
+  let query_frequency = 1h;   // == queryFrequency. Each run owns exactly one 1h slice of ingestion time.
+  let query_period    = 2h;   // == queryPeriod. Scan window on event time = query_frequency + ingestion_delay.
+  let ingestion_delay = 1h;   // Max tolerated lag between TimeGenerated and ingestion for SigninLogs (p99 is normally < 15m; 1h is headroom).
+  //
+  // ---- Thresholds (each comment states its meaning and the FP it trades against) ----
+  let min_distinct_accounts    = 10;  // Distinct accounts that received a spray-shaped number of invalid-password failures. Lower = catches smaller sprays, more noise from shared egress IPs where many users mistype.
+  let max_failures_per_account = 3;   // Spray shape: at most N invalid-password attempts per account. Accounts above this are brute force, counted separately (DistinctFailedAccounts) and left to a brute-force rule.
+  //
+  // ---- Result-code classification (keep the two sets disjoint; a code in both double-counts) ----
+  // Password was WRONG (or account does not exist): the only codes that count as a spray failure.
+  let CredInvalid = dynamic(["50126",   // InvalidUserNameOrPassword
+                             "50053",   // IdsLocked - account locked / IP flagged after repeated failures (consequence of the spray)
+                             "50034"]); // UserAccountNotFound - sprays from purchased lists hit non-existent accounts
+  // Password was ACCEPTED, then the flow succeeded or was interrupted (MFA, CA, device state). These are the compromised-candidate accounts.
+  let CredValid = dynamic(["0",      // success
+                           "50074",  // strong auth (MFA) required
+                           "50076",  // MFA required (config change / new location)
+                           "50072",  // user must enroll for MFA
+                           "50158",  // external security challenge not satisfied
+                           "53000",  // CA: device not compliant
+                           "53001",  // CA: device not domain joined
+                           "53003",  // CA: blocked by policy
+                           "50129",  // device not workplace joined
+                           "50097",  // device authentication required
+                           "50005",  // CA: unsupported device platform
+                           "50140",  // keep-me-signed-in interrupt
+                           "50173",  // fresh auth token required
+                           "50055"]);// password expired - the password supplied was correct
+  //
+  // ---- Environment-specific tuning (data, not logic; survives upstream updates) ----
+  // Begin environment-specific filter.
+  let CorporateEgressRanges = dynamic([]);   // CIDRs of corporate NAT / VPN egress to ignore, e.g. dynamic(["198.51.100.0/24"]). Blind spot: a spray launched from inside that egress will not fire.
+  // OPTION: replace the literal list with a watchlist once it exists in the workspace:
+  //   let CorporateEgressRanges = toscalar(_GetWatchlist("IP-CorporateRanges") | summarize make_list(tostring(IPAddress)));
+  // End environment-specific filter.
+  //
+  let Base = materialize(
+      SigninLogs
+      // now() - x instead of ago(x), and coalesce() on ingestion_time(): identical in production (ingestion_time() is always set on the
+      // real table) but lets the unit-test harness pin now() and run the rule against inline datatable fixtures, where ingestion_time() is null.
+      | where TimeGenerated >= now() - query_period                               // wide scan on event time: late-arriving events are still seen
+      | where coalesce(ingestion_time(), TimeGenerated) > now() - query_frequency // exact run window on ingestion time: no gaps, no duplicates between hourly runs
+      | where ResultType in (CredInvalid) or ResultType in (CredValid)
+      | where isnotempty(IPAddress) and isnotempty(UserPrincipalName) and UserPrincipalName !in ("-", "none", "[]")
+      // coalesce(): ipv4_is_in_any_range() returns null for IPv6 addresses, which would otherwise drop every IPv6 row
+      | where coalesce(ipv4_is_in_any_range(IPAddress, CorporateEgressRanges), false) == false
+      | extend UserPrincipalName = tolower(UserPrincipalName)
+      | project TimeGenerated, IPAddress, UserPrincipalName, ResultType, AppDisplayName, ClientAppUsed, UserAgent, Location, AutonomousSystemNumber
+  );
+  // Stage 1: per (IP, account) counts, so the per-account spray shape can be tested exactly, not as an average.
+  // Stage 2: per IP compound threshold.
+  let Candidates = materialize(
+      Base
+      | summarize Failures      = countif(ResultType in (CredInvalid)),
+                  CredValidated = countif(ResultType in (CredValid)),
+                  Successes     = countif(ResultType == "0"),
+                  FirstSeen     = min(TimeGenerated),
+                  LastSeen      = max(TimeGenerated)
+               by IPAddress, UserPrincipalName
+      | summarize SprayedAccounts             = dcountif(UserPrincipalName, Failures between (1 .. max_failures_per_account)),
+                  DistinctFailedAccounts      = dcountif(UserPrincipalName, Failures > 0),
+                  TotalFailures               = sum(Failures),
+                  TotalSuccesses              = sum(Successes),
+                  CredentialValidatedCount    = dcountif(UserPrincipalName, CredValidated > 0),
+                  CredentialValidatedAccounts = make_set_if(UserPrincipalName, CredValidated > 0, 100),
+                  SampleAccounts              = make_set_if(UserPrincipalName, Failures > 0, 25),
+                  FirstSeen                   = min(FirstSeen),
+                  LastSeen                    = max(LastSeen)
+               by IPAddress
+      | where SprayedAccounts >= min_distinct_accounts     // many accounts, few guesses each
+      | where TotalFailures > TotalSuccesses               // self-tunes corporate egress: a NAT with hundreds of normal sign-ins and a few typos never fires
+  );
+  Candidates
+  | join kind=inner (
+      Base
+      | where IPAddress in ((Candidates | project IPAddress))   // semi-join pre-filter: build context only for IPs that crossed the threshold
+      | summarize Apps        = make_set(AppDisplayName, 20),
+                  ClientApps  = make_set(ClientAppUsed, 10),
+                  UserAgents  = make_set(UserAgent, 10),
+                  Countries   = make_set(Location, 10),
+                  ResultCodes = make_set(ResultType, 20),
+                  AutonomousSystemNumber = take_any(AutonomousSystemNumber)
+               by IPAddress
+  ) on IPAddress
+  | project-away IPAddress1
+  | extend Severity = iff(CredentialValidatedCount > 0, "High", "Medium")   // password accepted for at least one account -> High
+  | extend DetectionReason = strcat(SprayedAccounts, " accounts received 1-", max_failures_per_account,
+                                    " invalid-password attempts from ", IPAddress, " in the last hour (",
+                                    TotalFailures, " failures vs ", TotalSuccesses, " successes); ",
+                                    CredentialValidatedCount, " account(s) had the password accepted")
+  | extend CredentialValidatedAccounts = tostring(CredentialValidatedAccounts),
+           SampleAccounts = tostring(SampleAccounts)
+  | project-reorder IPAddress, Severity, FirstSeen, LastSeen, SprayedAccounts, DistinctFailedAccounts, TotalFailures, TotalSuccesses,
+                    CredentialValidatedCount, CredentialValidatedAccounts, SampleAccounts, Countries, AutonomousSystemNumber,
+                    Apps, ClientApps, UserAgents, ResultCodes, DetectionReason
+entityMappings:
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: IPAddress
+customDetails:
+  SprayedAccounts: SprayedAccounts
+  TotalFailures: TotalFailures
+  TotalSuccesses: TotalSuccesses
+  CredentialValidatedCount: CredentialValidatedCount
+  CredentialValidatedAccounts: CredentialValidatedAccounts
+  SampleAccounts: SampleAccounts
+alertDetailsOverride:
+  alertDisplayNameFormat: "Password spray from {{IPAddress}}: {{SprayedAccounts}} accounts targeted, {{CredentialValidatedCount}} password(s) accepted"
+  alertDescriptionFormat: "{{DetectionReason}}. Review CredentialValidatedAccounts first: reset their passwords and revoke sessions. Block {{IPAddress}} via Conditional Access named locations if it is not corporate egress."
+  alertSeverityColumnName: Severity
+eventGroupingSettings:
+  aggregationKind: AlertPerResult
+incidentConfiguration:
+  createIncident: true
+  groupingConfiguration:
+    enabled: true
+    reopenClosedIncident: false
+    lookbackDuration: 5h
+    matchingMethod: Selected
+    groupByEntities:
+      - IP
+suppressionDuration: 5h
+suppressionEnabled: false
+version: 1.0.0
+kind: Scheduled

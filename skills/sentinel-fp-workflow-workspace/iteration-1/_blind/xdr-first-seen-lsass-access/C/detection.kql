@@ -1,0 +1,116 @@
+// ============================================================================
+// Rule:      First-seen process opening lsass.exe (fleet-wide baseline)
+// Platform:  Microsoft Defender XDR custom detection (advanced hunting)
+// Frequency: Every 1 hour  ->  platform lookback 4 h (fixed pair)
+// Intent:    Alert when a process image that has NOT opened lsass.exe with
+//            memory-access rights anywhere in the fleet during the baseline
+//            window does so for the first time. MITRE T1003.001
+//            (OS Credential Dumping: LSASS Memory), tactic Credential Access.
+// Entity:    one row per (new process key, device); Device = impacted asset,
+//            initiating account = impacted account, process/file = evidence.
+// Version:   1.0.0
+// ----------------------------------------------------------------------------
+// Time semantics (read before editing):
+//  * The service judges RESULTS against the rule lookback using ingestion_time().
+//    The query may read further back for the baseline, which is why the
+//    baseline uses an explicit Timestamp filter and the "is it new?" decision
+//    is taken on ingestion_time(), not event time. Late-arriving events are
+//    therefore still evaluated correctly (see rule.md "What it would miss").
+//  * BaselineWindow is capped by advanced-hunting retention (30 d). "Never
+//    seen in the fleet" therefore means "not seen in the last 30 days".
+// ============================================================================
+
+// ---------------------------- Tunables ---------------------------------------
+let LookbackWindow            = 4h;        // MUST equal the platform lookback for the chosen frequency (1 h -> 4 h)
+let BaselineWindow            = 30d;       // "ever seen" horizon; 30 d is the advanced-hunting maximum
+let TargetProcessNames        = dynamic(["lsass.exe"]);
+// Access rights that imply reading/writing LSASS memory or injecting into it.
+// PROCESS_CREATE_THREAD 0x0002 | PROCESS_VM_OPERATION 0x0008 | PROCESS_VM_READ 0x0010
+// | PROCESS_VM_WRITE 0x0020 | PROCESS_DUP_HANDLE 0x0040. Handles opened with only
+// PROCESS_QUERY_LIMITED_INFORMATION (0x1000) etc. are ignored when RequireMemoryAccess is true.
+let MemoryAccessBits          = long(0x7A);
+let RequireMemoryAccess       = true;      // false = treat ANY lsass handle open as in scope (noisier, broader)
+// How to identify "a process" for the baseline:
+//   "path" = normalised lower-case image path (user profile, version dirs, GUIDs, temp subdirs wildcarded)
+//   "hash" = InitiatingProcessSHA1 (strictest; re-alerts on every patch/update - expect ~10x the volume)
+let BaselineKeyMode           = "path";
+// Rollout suppression: if a "new" process shows up on more than N devices inside one
+// lookback window it is almost always a software deployment. 0 = disabled (recommended
+// until you have measured volume; a worm-style mass dump would also look like this).
+let SuppressRolloutDeviceCount = 0;
+// Hard exclusions of NORMALISED process keys (see rule.md for how to derive one).
+// Keep this list short and reviewed; prefer Defender alert tuning for entity-level suppression.
+let ExcludedProcessKeys       = dynamic([
+    // "c:/program files/windows defender/msmpeng.exe"
+]);
+// -----------------------------------------------------------------------------
+
+// Single scan of the baseline window, filtered on indexed columns BEFORE any parsing.
+let LsassOpens =
+    DeviceEvents
+    | where Timestamp > ago(BaselineWindow)
+    | where ActionType == "OpenProcessApiCall"
+    | where FileName in~ (TargetProcessNames)
+    | where isnotempty(InitiatingProcessFolderPath)
+    | extend IngestedAt = ingestion_time()
+    | extend AF = parse_json(AdditionalFields)
+    | extend DesiredAccess = tolong(AF.DesiredAccess)
+    // Fail OPEN when the access mask is absent: a silent gap is worse than a reviewable alert.
+    | where not(RequireMemoryAccess)
+         or isnull(DesiredAccess)
+         or binary_and(DesiredAccess, MemoryAccessBits) != 0
+    // ---- Process key normalisation (runs only on surviving rows) ----
+    | extend NormPath = replace_string(tolower(InitiatingProcessFolderPath), @"\", "/")
+    | extend NormPath = iff(NormPath endswith strcat("/", tolower(InitiatingProcessFileName)),
+                            NormPath,
+                            strcat(NormPath, "/", tolower(InitiatingProcessFileName)))
+    | extend NormPath = replace_regex(NormPath, @"^[a-z]:/users/[^/]+/", "c:/users/*/")
+    | extend NormPath = replace_regex(NormPath, @"/[^/]*[0-9]+\.[0-9]+(\.[0-9]+)*[^/]*/", "/*/")
+    | extend NormPath = replace_regex(NormPath, @"\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?", "*")
+    | extend NormPath = replace_regex(NormPath, @"/temp/[^/]+/", "/temp/*/")
+    | extend ProcKey = iff(BaselineKeyMode == "hash" and isnotempty(InitiatingProcessSHA1),
+                           tolower(InitiatingProcessSHA1),
+                           NormPath)
+    | where ProcKey !in (ExcludedProcessKeys);
+
+// Fleet-wide novelty: the earliest INGESTED record for this key lies inside the current lookback.
+let NewKeys =
+    LsassOpens
+    | summarize FleetFirstIngested = min(IngestedAt),
+                FleetFirstSeen     = min(Timestamp),
+                FleetDeviceCount   = dcount(DeviceId),
+                FleetEventCount    = count()
+              by ProcKey
+    | where FleetFirstIngested > ago(LookbackWindow)
+    | where SuppressRolloutDeviceCount == 0 or FleetDeviceCount <= SuppressRolloutDeviceCount;
+
+// Current-window events for those keys, aggregated to the investigation entity (process key x device).
+let RecentOpens =
+    LsassOpens
+    | where IngestedAt > ago(LookbackWindow)
+    | summarize arg_max(Timestamp, *),
+                DeviceEventCount    = count(),
+                AccessMasksSeen     = make_set(DesiredAccess, 16),
+                AccountsSeen        = make_set(InitiatingProcessAccountName, 16)
+              by ProcKey, DeviceId;
+
+// Small side (NewKeys) on the left; explicit inner join; both sides already time-bound.
+NewKeys
+| join kind=inner (RecentOpens) on ProcKey
+| project
+    // --- required by the XDR platform contract (MDE device table) ---
+    Timestamp, ReportId, DeviceId, DeviceName,
+    // --- impacted assets (max one column per entity type) ---
+    InitiatingProcessAccountSid, InitiatingProcessAccountUpn,
+    // --- evidence / custom details ---
+    ProcKey,
+    InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessSHA1, InitiatingProcessMD5,
+    InitiatingProcessCommandLine, InitiatingProcessId, InitiatingProcessUniqueId, InitiatingProcessCreationTime,
+    InitiatingProcessParentFileName, InitiatingProcessParentId,
+    InitiatingProcessVersionInfoCompanyName, InitiatingProcessVersionInfoProductName,
+    InitiatingProcessVersionInfoOriginalFileName, InitiatingProcessVersionInfoFileDescription,
+    InitiatingProcessAccountName, InitiatingProcessAccountDomain,
+    IsInitiatingProcessRemoteSession, InitiatingProcessRemoteSessionIP,
+    TargetFileName = FileName, TargetFolderPath = FolderPath, TargetProcessId = ProcessId,
+    DesiredAccess, DesiredAccessHex = tohex(DesiredAccess), AccessMasksSeen, AccountsSeen,
+    FleetFirstSeen, FleetFirstIngested, FleetDeviceCount, FleetEventCount, DeviceEventCount
