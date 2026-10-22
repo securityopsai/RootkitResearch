@@ -109,7 +109,7 @@ NewKeys
     InitiatingProcessParentFileName, InitiatingProcessParentId,
     InitiatingProcessVersionInfoCompanyName, InitiatingProcessVersionInfoProductName,
     InitiatingProcessVersionInfoOriginalFileName, InitiatingProcessVersionInfoFileDescription,
-    InitiatingProcessAccountName, InitiatingProcessAccountDomain, InitiatingProcessIntegrityLevel = "",
+    InitiatingProcessAccountName, InitiatingProcessAccountDomain,
     IsInitiatingProcessRemoteSession, InitiatingProcessRemoteSessionIP,
     TargetFileName = FileName, TargetFolderPath = FolderPath, TargetProcessId = ProcessId,
     DesiredAccess, DesiredAccessHex = tohex(DesiredAccess), AccessMasksSeen, AccountsSeen,
