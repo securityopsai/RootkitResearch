@@ -1,0 +1,73 @@
+// =============================================================================
+// Shadow copy / backup catalog deletion (ransomware pre-encryption)
+// Platform : Microsoft Defender XDR custom detection (Advanced Hunting, DeviceProcessEvents)
+// Schedule : Every 1 hour  ->  platform lookback 4 h (fixed pair). First run scans 30 days.
+// Intent   : An attacker inhibits system recovery before encryption by deleting or shrinking
+//            Volume Shadow Copies / Windows backup catalogs.
+//            MITRE ATT&CK: TA0040 Impact / T1490 Inhibit System Recovery.
+// Entities : Impacted Device = DeviceId. Impacted Account = AccountSid (or AccountUpn) - pick ONE.
+//            Process / command line / SHA256 / initiating process = related evidence.
+// Design   : single table, no join (cheap, NRT-eligible later if comments are stripped).
+//            One alert per device per run; a single deletion is actionable (MinEvents = 1).
+// Note     : no Timestamp filter on purpose - the service pre-filters to the rule lookback.
+// Version  : 1.0.0  (replaces flawed draft; see review.md)
+// =============================================================================
+// ---------------------------- Tunables (hoisted) -----------------------------
+// LOLBins able to delete / shrink shadow copies or backup catalogs.
+let ShadowTools = dynamic(["vssadmin.exe", "wmic.exe", "wbadmin.exe", "powershell.exe", "pwsh.exe"]);
+// Backup products that legitimately prune shadow copies. Term match on the INITIATING
+// process folder (e.g. C:\Program Files\Veeam\...). Validate against 7 days of live data
+// before go-live, tighten to exact folders once real values are known, review quarterly.
+let ExcludedInitiatingFolders = dynamic(["Veeam", "Commvault", "Veritas", "Backup Exec"]);
+// Maintenance accounts allowed to prune backups (lower-case UPN or domain\user).
+// Keep empty until an FP review justifies an entry. Never exclude SYSTEM.
+let ExcludedAccounts = dynamic([]);
+// Minimum matching events per device per run. Keep at 1: one deletion is the ransomware pattern.
+let MinEvents = 1;
+// ------------------------------- Detection -----------------------------------
+DeviceProcessEvents
+| where FileName in~ (ShadowTools)                                       // FileName-anchored, indexed, one pass
+// Normalize the command line (strip quotes, commas -> space) before unordered, case-insensitive matching.
+| extend Canon = replace_string(replace_string(ProcessCommandLine, '"', ''), ',', ' ')
+| extend Technique = case(
+    FileName =~ "vssadmin.exe" and Canon contains "delete" and Canon contains "shadows",
+        "vssadmin delete shadows",
+    FileName =~ "vssadmin.exe" and Canon contains "resize" and Canon contains "shadowstorage",
+        "vssadmin resize shadowstorage",
+    FileName =~ "wmic.exe" and Canon contains "shadowcopy" and Canon contains "delete",
+        "wmic shadowcopy delete",
+    FileName =~ "wbadmin.exe" and Canon contains "delete"
+        and (Canon contains "catalog" or Canon contains "systemstatebackup"),
+        "wbadmin delete catalog/systemstatebackup",
+    FileName in~ ("powershell.exe", "pwsh.exe") and Canon contains "shadowcopy"
+        and (Canon contains "delete" or Canon contains "remove-wmiobject" or Canon contains "remove-ciminstance"),
+        "powershell Win32_ShadowCopy delete",
+    "")
+| where isnotempty(Technique)
+// ------------------------------ Exclusions -----------------------------------
+// Data-driven exclusions only; logic changes belong in the Technique block above.
+| where not(InitiatingProcessFolderPath has_any (ExcludedInitiatingFolders))
+| extend AccountKey = tolower(iff(isnotempty(AccountUpn), AccountUpn, strcat(AccountDomain, @"\", AccountName)))
+| where AccountKey !in (ExcludedAccounts)
+// --------------- Entity-level aggregation, required columns kept -------------
+// arg_max(Timestamp, *) keeps the latest event's full row (Timestamp, ReportId, DeviceName,
+// account + process columns) so XDR required columns and related evidence survive the summarize.
+| summarize arg_max(Timestamp, *),
+            EventCount          = count(),
+            FirstSeen           = min(Timestamp),
+            Techniques          = make_set(Technique, 10),
+            CommandLines        = make_set(ProcessCommandLine, 10),
+            InitiatingProcesses = make_set(InitiatingProcessFileName, 10)
+    by DeviceId
+| where EventCount >= MinEvents
+| project
+    // XDR required columns (device tables)
+    Timestamp, ReportId, DeviceId, DeviceName,
+    // Account entity - choose ONE of AccountSid / AccountUpn as impacted asset in the rule UI
+    AccountSid, AccountUpn, AccountName, AccountDomain, AccountObjectId,
+    // Process evidence (latest matching event)
+    FileName, FolderPath, SHA256, ProcessId, ProcessUniqueId, ProcessCommandLine,
+    InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessCommandLine,
+    InitiatingProcessAccountName, InitiatingProcessParentFileName, InitiatingProcessUniqueId,
+    // Custom details for the alert
+    Technique, Techniques, EventCount, FirstSeen, CommandLines, InitiatingProcesses

@@ -1,0 +1,10 @@
+{
+ "7": {
+  "passed": true,
+  "evidence": "present: ['Timestamp', 'ReportId', 'DeviceId']; 0 join(s), 0 without kind=; 3 make_set/list call(s), 0 uncapped"
+ },
+ "8": {
+  "passed": false,
+  "evidence": "kql_lint: -- 0 error(s), 3 warning(s)"
+ }
+}

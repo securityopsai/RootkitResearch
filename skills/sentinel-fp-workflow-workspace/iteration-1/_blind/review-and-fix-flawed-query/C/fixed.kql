@@ -1,0 +1,81 @@
+// =============================================================================
+// Title       : Inhibit System Recovery - shadow copy / backup / recovery deletion
+// Platform    : Microsoft Defender XDR custom detection (Advanced hunting)
+// Frequency   : Every hour (the platform sets the lookback; do NOT add ago())
+// Severity    : High
+// MITRE       : T1490 Inhibit System Recovery (Impact); TA0040
+// Impacted entities : Device = DeviceId, User = AccountSid, Process = ReportId
+// Description : Alerts on a single process launch that deletes or shrinks Volume
+//               Shadow Copies, deletes Windows backup catalogs, or disables
+//               Windows recovery - the usual ransomware pre-encryption step.
+//               One event is enough; no thresholding, no joins.
+// Tuning      : Add legitimate backup agents to BackupAgentFolders / BackupAgentParents
+//               after confirming their behaviour in your estate. Keep the lists
+//               narrow (parent folder paths, not bare file names).
+// =============================================================================
+let BackupAgentFolders = dynamic([
+    @"\Veeam\",
+    @"\Commvault\",
+    @"\Acronis\",
+    @"\Datto\",
+    @"\Altaro\",
+    @"\Arcserve\"
+]);
+let BackupAgentParents = dynamic([
+    "wbengine.exe"          // Windows Server Backup engine
+]);
+// Processes that implement the technique (match on name OR original file name
+// so a renamed copy of vssadmin.exe is still caught).
+let RecoveryTools = dynamic(["vssadmin.exe", "wmic.exe", "wbadmin.exe", "bcdedit.exe", "diskshadow.exe"]);
+let Shells        = dynamic(["powershell.exe", "pwsh.exe", "powershell_ise.exe", "cmd.exe"]);
+DeviceProcessEvents
+| where ActionType == "ProcessCreated"
+| where FileName in~ (RecoveryTools)
+     or ProcessVersionInfoOriginalFileName in~ (RecoveryTools)
+     or FileName in~ (Shells)
+| extend ToolName = iff(isnotempty(ProcessVersionInfoOriginalFileName), tolower(ProcessVersionInfoOriginalFileName), tolower(FileName))
+| where
+    // vssadmin delete shadows [/all] [/for=X:] [/oldest] [/quiet]  (any flag order)
+    (ToolName == "vssadmin.exe" and ProcessCommandLine has "delete"  and ProcessCommandLine has "shadows")
+    // vssadmin resize shadowstorage ... /maxsize=401MB  (forces shadow copy eviction)
+    or (ToolName == "vssadmin.exe" and ProcessCommandLine has "resize"  and ProcessCommandLine has "shadowstorage")
+    // wmic shadowcopy delete  /  wmic shadowcopy where "ID='{...}'" delete
+    or (ToolName == "wmic.exe"     and ProcessCommandLine has "shadowcopy" and ProcessCommandLine has "delete")
+    // wbadmin delete catalog -quiet  /  wbadmin delete systemstatebackup -keepVersions:0
+    or (ToolName == "wbadmin.exe"  and ProcessCommandLine has "delete" and ProcessCommandLine has_any ("catalog", "systemstatebackup"))
+    // bcdedit /set {default} recoveryenabled no  /  bcdedit /set {default} bootstatuspolicy ignoreallfailures
+    or (ToolName == "bcdedit.exe"  and (ProcessCommandLine has "recoveryenabled" or ProcessCommandLine has "ignoreallfailures"))
+    // diskshadow (interactive or scripted) deleting shadows
+    or (ToolName == "diskshadow.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows")
+    // PowerShell / cmd variants: Get-WmiObject Win32_ShadowCopy | Remove-WmiObject ; ...Win32_ShadowCopy...Delete() ; cmd /c vssadmin ...
+    or (FileName in~ (Shells) and ProcessCommandLine has "win32_shadowcopy"
+        and ProcessCommandLine has_any ("delete", "remove-wmiobject", "remove-ciminstance"))
+    or (FileName in~ (Shells) and ProcessCommandLine has "vssadmin"
+        and ProcessCommandLine has_any ("delete shadows", "shadowstorage"))
+    or (FileName in~ (Shells) and ProcessCommandLine has "wmic"
+        and ProcessCommandLine has "shadowcopy" and ProcessCommandLine has "delete")
+// ---- Exclusions: known-good backup agents (tune per environment) ------------
+| where not(InitiatingProcessFolderPath has_any (BackupAgentFolders))
+| where not(InitiatingProcessFileName in~ (BackupAgentParents))
+// ---- Output: one row per process event, with the columns XDR requires -------
+//      (Timestamp, DeviceId, ReportId) plus the evidence an analyst needs.
+| project
+    Timestamp,
+    DeviceId,
+    DeviceName,
+    ReportId,
+    AccountDomain,
+    AccountName,
+    AccountSid,
+    ToolName,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    ProcessId,
+    SHA256,
+    InitiatingProcessFileName,
+    InitiatingProcessFolderPath,
+    InitiatingProcessCommandLine,
+    InitiatingProcessAccountName,
+    InitiatingProcessParentFileName,
+    InitiatingProcessId

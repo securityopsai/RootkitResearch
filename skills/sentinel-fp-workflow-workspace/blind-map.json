@@ -1,0 +1,12 @@
+{
+ "review-and-fix-flawed-query": {
+  "with_skill": "A",
+  "old_skill": "B",
+  "without_skill": "C"
+ },
+ "promote-hunt-to-detection": {
+  "with_skill": "A",
+  "old_skill": "B",
+  "without_skill": "C"
+ }
+}

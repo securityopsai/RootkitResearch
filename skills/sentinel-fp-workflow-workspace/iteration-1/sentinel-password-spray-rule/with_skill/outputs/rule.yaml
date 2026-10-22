@@ -69,8 +69,10 @@ query: |
   //
   let Base = materialize(
       SigninLogs
-      | where TimeGenerated >= ago(query_period)            // wide scan on event time: late-arriving events are still seen
-      | where ingestion_time() > ago(query_frequency)       // exact run window on ingestion time: no gaps, no duplicates between hourly runs
+      // now() - x instead of ago(x), and coalesce() on ingestion_time(): identical in production (ingestion_time() is always set on the
+      // real table) but lets the unit-test harness pin now() and run the rule against inline datatable fixtures, where ingestion_time() is null.
+      | where TimeGenerated >= now() - query_period                               // wide scan on event time: late-arriving events are still seen
+      | where coalesce(ingestion_time(), TimeGenerated) > now() - query_frequency // exact run window on ingestion time: no gaps, no duplicates between hourly runs
       | where ResultType in (CredInvalid) or ResultType in (CredValid)
       | where isnotempty(IPAddress) and isnotempty(UserPrincipalName) and UserPrincipalName !in ("-", "none", "[]")
       // coalesce(): ipv4_is_in_any_range() returns null for IPv6 addresses, which would otherwise drop every IPv6 row

@@ -1,0 +1,34 @@
+{
+ "1": {
+  "passed": true,
+  "evidence": "sort/order present: False; lets: 10; threshold where: True"
+ },
+ "2": {
+  "passed": true,
+  "evidence": "population filter: True; min connections: True"
+ },
+ "3": {
+  "passed": true,
+  "evidence": "present: ['Timestamp', 'ReportId', 'DeviceId']"
+ },
+ "4": {
+  "passed": true,
+  "evidence": "3 make_set/list call(s), 0 uncapped"
+ },
+ "5": {
+  "passed": true,
+  "evidence": "mentions 4h lookback: True; mentions window resolution: True"
+ },
+ "6": {
+  "passed": true,
+  "evidence": "volume/dedup terms present"
+ },
+ "7": {
+  "passed": true,
+  "evidence": "sampling/shared-destination terms present"
+ },
+ "8": {
+  "passed": true,
+  "evidence": "post-deploy terms present"
+ }
+}

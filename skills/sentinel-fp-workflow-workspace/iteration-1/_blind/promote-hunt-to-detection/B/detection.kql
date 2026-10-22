@@ -1,0 +1,88 @@
+// =============================================================================
+// Detection : Possible C2 beaconing - sustained, regular connections from a
+//             device to a rare public IP
+// Platform  : Microsoft Defender XDR custom detection (Advanced Hunting)
+// Table     : DeviceNetworkEvents (MDE device table)
+// Schedule  : Every 1 hour  -> XDR fixes the lookback at 4 h for this frequency
+// Version   : 1.0.0  (promoted from hunt.kql; see promotion-notes.md)
+// Intent    : A device keeps connecting, at a regular cadence and across most of
+//             the window, to a public IP that almost no other device in the
+//             estate talks to. Consistent with C2 beaconing.
+//             MITRE : TA0011 Command and Control - T1071 Application Layer
+//             Protocol, T1571 Non-Standard Port.
+// Entities  : Impacted asset = Device (DeviceId). Related evidence = IP
+//             (RemoteIP), Process (InitiatingProcessSHA256 / FileName),
+//             Account (InitiatingProcessAccountSid).
+// NOTE      : No Timestamp / ago() filter on purpose - the custom detection
+//             service pre-filters DeviceNetworkEvents to the rule lookback (4 h,
+//             evaluated on ingestion time). Adding one here would fight it.
+// =============================================================================
+
+// ---- Tunables (all thresholds live here; no magic numbers below) ------------
+let MinConnections   = 12;    // >= successful connections device->IP in the window (~1 per 20 min)
+let MinSpanMinutes   = 180;   // >= minutes between first and last contact (sustained across >= 3 of the 4 h)
+let BinSize          = 15m;   // cadence bucket size
+let MinActiveBins    = 8;     // >= distinct buckets with a contact (regularity: at least half of 16 buckets)
+let MaxDevices       = 3;     // "rare" = at most this many devices estate-wide contact the IP in the window
+let MaxSetSize       = 10;    // evidence cap for make_set() columns
+
+// ---- Exclusions (DATA, not logic). Start empty, populate only from reviewed
+// ---- FP cases. Move to externaldata() when the lists grow; in the Sentinel
+// ---- version these become _GetWatchlist() lookups. ------------------------
+let ExcludedRemoteIPs    = dynamic([]);   // exact public IPs confirmed benign (NTP, licensing, monitoring)
+let ExcludedProcessNames = dynamic([]);   // e.g. "MsSense.exe", "SenseIR.exe" - add only after review
+let ExcludedUrlTerms     = dynamic([]);   // RemoteUrl terms for CDN / SaaS edges that look "rare" per device
+
+// ---- Estate-wide rarity: how many devices contacted each public IP ----------
+// Computed over ALL successful public connections (no process/URL exclusions)
+// so that a destination popular across the estate is never "rare".
+let RareIPs =
+    DeviceNetworkEvents
+    | where ActionType == "ConnectionSuccess" and RemoteIPType == "Public"
+    | where isnotempty(RemoteIP) and isnotempty(DeviceId)
+    | where RemoteIP !in (ExcludedRemoteIPs)
+    | summarize Devices = dcount(DeviceId) by RemoteIP
+    | where Devices <= MaxDevices;
+
+// ---- Candidate device -> IP pairs with beacon-like cadence ------------------
+DeviceNetworkEvents
+| where ActionType == "ConnectionSuccess" and RemoteIPType == "Public"
+| where isnotempty(RemoteIP) and isnotempty(DeviceId)
+| where RemoteIP !in (ExcludedRemoteIPs)
+| where InitiatingProcessFileName !in~ (ExcludedProcessNames)
+| where array_length(ExcludedUrlTerms) == 0 or not(RemoteUrl has_any (ExcludedUrlTerms))
+| project Timestamp, ReportId, DeviceId, DeviceName, RemoteIP, RemotePort, RemoteUrl, Protocol,
+          InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessSHA256,
+          InitiatingProcessCommandLine, InitiatingProcessId,
+          InitiatingProcessAccountName, InitiatingProcessAccountSid
+| summarize hint.shufflekey = RemoteIP
+    Connections = count(),
+    ActiveBins  = dcount(bin(Timestamp, BinSize)),
+    FirstSeen   = min(Timestamp),
+    LastSeen    = max(Timestamp),
+    Ports       = make_set(RemotePort, MaxSetSize),
+    Urls        = make_set(RemoteUrl, MaxSetSize),
+    Processes   = make_set(InitiatingProcessFileName, MaxSetSize),
+    // Recover platform-required columns + latest-event evidence for the alert
+    (Timestamp, ReportId, DeviceName, Protocol,
+     InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessSHA256,
+     InitiatingProcessCommandLine, InitiatingProcessId,
+     InitiatingProcessAccountName, InitiatingProcessAccountSid)
+        = arg_max(Timestamp, ReportId, DeviceName, Protocol,
+                  InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessSHA256,
+                  InitiatingProcessCommandLine, InitiatingProcessId,
+                  InitiatingProcessAccountName, InitiatingProcessAccountSid)
+    by DeviceId, RemoteIP
+| extend SpanMinutes = datetime_diff('minute', LastSeen, FirstSeen)
+| where Connections >= MinConnections
+    and SpanMinutes >= MinSpanMinutes
+    and ActiveBins  >= MinActiveBins
+// Smaller side (thresholded candidates) on the left; explicit kind=inner.
+| join kind=inner RareIPs on RemoteIP
+// ---- Output: required columns first, then evidence for the analyst ----------
+| project Timestamp, ReportId, DeviceId, DeviceName,
+          RemoteIP, Devices, Connections, ActiveBins, SpanMinutes, FirstSeen, LastSeen,
+          Ports, Urls, Protocol, Processes,
+          InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessSHA256,
+          InitiatingProcessCommandLine, InitiatingProcessId,
+          InitiatingProcessAccountName, InitiatingProcessAccountSid

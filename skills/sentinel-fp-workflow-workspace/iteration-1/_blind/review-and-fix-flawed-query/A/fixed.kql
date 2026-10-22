@@ -1,0 +1,96 @@
+// [ORG] Shadow copy / backup catalog deletion (ransomware pre-encryption) — Defender XDR custom detection
+// VERSION: 2.0 (rewrite of 1.0; see review.md)   STATUS: UNTESTED against live data — lint clean, fixtures below
+//
+// DETECTION STRATEGY: a process launch of vssadmin / wmic / wbadmin whose arguments delete volume shadow
+//   copies or the Windows backup catalog. Ransomware does this immediately before encryption so victims cannot
+//   roll back. One occurrence is enough to alert.
+// MITRE: TA0040 Impact · T1490 Inhibit System Recovery (the behaviour the predicate asserts).
+// THE MECHANIC: `vssadmin delete shadows /all /quiet`, `vssadmin resize shadowstorage ... /maxsize=401MB`,
+//   `wmic shadowcopy delete`, `wbadmin delete catalog -quiet`, `wbadmin delete systemstatebackup -keepVersions:0`.
+// THE RESILIENCE: binary identified by ProcessVersionInfoOriginalFileName (renamed copies still match) with
+//   FileName as fallback; arguments matched as unordered, case-insensitive token pairs on a canonicalised
+//   command line (quotes / carets / commas stripped), so reorder, padding, quoting and casing do not evade.
+// DATA: DeviceProcessEvents / ActionType == "ProcessCreated" — not sampled. Permission: local admin.
+// PLATFORM CONTRACT: frequency every 1 h → lookback 4 h (fixed XDR pair). The service evaluates the lookback on
+//   ingestion_time(), so there is NO Timestamp filter on the recent window (late events still fire).
+//   First run scans 30 d: populate the environment fence before enabling, or expect a backup-tool burst.
+//   Single table, no join/union/externaldata — strip the comments and it is NRT-eligible if lower latency is wanted.
+// TP LIKELIHOOD WHEN IT FIRES: high — the only non-malicious producers are backup / imaging products and an admin
+//   reclaiming disk; both are BTP, never "unrelated". COVERAGE CAVEAT / BLIND SPOTS (attacker's side):
+//   - Evasion: PowerShell WMI (`Get-WmiObject Win32_ShadowCopy | Remove-WmiObject`), `diskshadow` script files,
+//     direct COM (IVssBackupComponents::DeleteSnapshots), `bcdedit /set {default} recoveryenabled no` and
+//     `wmic shadowcopy` called via COM from a non-wmic host are NOT covered — pair with the native MDE alert.
+//   - Exclusion-induced: a parent listed in the fence (backup vendor) is excluded, so ransomware launched from a
+//     compromised/hijacked backup-agent process will not fire.
+//   - Telemetry: none expected (process creation is not sampled).
+// ANALYST ACTION: pivot on InitiatingProcess* (what spawned the deletion) and the account; if the parent is a
+//   known backup product, classify BTP and add it to the fence (not to the token logic).
+// DedupFields: DeviceId, InitiatingProcessAccountSid  — one alert per device+account per run; the platform
+//   dedups identical entity + custom-detail values across the 4 h / 1 h overlap. Re-validate on projection change.
+// Impacted assets: Device = DeviceId, Account = InitiatingProcessAccountSid (≤ 1 column per entity type).
+// Custom details (suggested): ToolsUsed, CommandLines, ParentProcesses, EventCount.
+//
+// UNIT FIXTURES (scripts/kql_test_harness.py): tp.json = `vssadmin delete shadows /all /quiet` from a cmd.exe parent;
+//   tp_variants.json = `"C:\Windows\System32\vssadmin.exe" Delete Shadows /For=C: /Quiet /All`,
+//   `wmic shadowcopy delete`, `wbadmin DELETE CATALOG -quiet`, `vss^admin del"ete" shadows /all`;
+//   tn_lookalike.json = `vssadmin list shadows`, `wmic shadowcopy list brief`, `wbadmin get versions`;
+//   boundary = MinEvents-1 / MinEvents / MinEvents+1 rows per device; empty.json = no rows.
+
+// ---- Rule contract (mirrors the custom-detection metadata; informational, the platform enforces it) ----
+let query_frequency = 1h;      // rule frequency (XDR "Every 1 hour")
+let query_period    = 4h;      // XDR lookback paired with a 1 h frequency; evaluated on ingestion_time() by the service
+// ---- Tunables ----
+let MinEvents       = 1;       // alert on the first deletion attempt. Raising it trades single-shot ransomware (missed) against
+                               // backup tooling that issues one delete per job (noise) — tune noise via the fence instead.
+let MaxContextItems = 20;      // cap on make_set() evidence lists so alert payloads stay small
+// Binaries that implement shadow-copy / catalog deletion. Matched case-insensitively on OriginalFileName (renamed
+// binaries) and on FileName (events whose version info is empty). Adding a binary needs a matching token pair below.
+let TargetBinaries  = dynamic(["vssadmin.exe", "wmic.exe", "wbadmin.exe"]);
+// Begin environment-specific filter.
+// Known benign-true-positive generators for T1490: backup / imaging / deployment agents that prune shadow copies
+// as part of a job. Identify them by the PARENT's version-info company (not file name) so a renamed binary does not
+// hide in the exclusion. Blind spot: ransomware spawned from an excluded parent will not fire.
+// OPTION 1 (default): | where not(InitiatingProcessVersionInfoCompanyName in~ (ExcludedParentCompanies))
+// OPTION 2: exclude by parent folder: | where not(InitiatingProcessFolderPath has_any (ExcludedParentFolders))
+let ExcludedParentCompanies = dynamic([]);   // e.g. "Veeam Software", "Commvault Systems", "Acronis", "Veritas Technologies"
+let ExcludedParentFolders   = dynamic([]);   // e.g. @"\Program Files\Veeam\"
+// End environment-specific filter.
+DeviceProcessEvents
+| where ActionType == "ProcessCreated"                       // other ActionTypes now exist in this table; keep only launches
+| where ProcessVersionInfoOriginalFileName in~ (TargetBinaries)
+     or FileName in~ (TargetBinaries)                        // fallback when version info is empty
+// Begin environment-specific filter.
+| where not(InitiatingProcessVersionInfoCompanyName in~ (ExcludedParentCompanies))
+| where not(InitiatingProcessFolderPath has_any (ExcludedParentFolders))
+// End environment-specific filter.
+// Canonicalise AFTER the indexed filters: strip quote / caret / comma obfuscation so token matching sees `delete`
+// even when logged as `del"ete"` or `del^ete`; `contains` is case-insensitive so `Delete` / `DELETE` match.
+| extend Tool  = tolower(iff(isnotempty(ProcessVersionInfoOriginalFileName), ProcessVersionInfoOriginalFileName, FileName))
+| extend Canon = replace_string(replace_string(replace_string(replace_string(ProcessCommandLine, '"', ''), "'", ''), '^', ''), ',', ' ')
+// Unordered, tool-specific invariant token pairs (2 per technique). Never a full sample string.
+| where (Tool =~ "vssadmin.exe" and ((Canon contains "delete" and Canon contains "shadows")
+                                     or (Canon contains "resize" and Canon contains "shadowstorage")))   // resize to a tiny /maxsize evicts all copies
+     or (Tool =~ "wmic.exe"     and  (Canon contains "shadowcopy" and Canon contains "delete"))
+     or (Tool =~ "wbadmin.exe"  and  (Canon contains "delete" and (Canon contains "catalog" or Canon contains "systemstatebackup")))
+| project Timestamp, ReportId, DeviceId, DeviceName, Tool, ProcessCommandLine, FolderPath, SHA256,
+          InitiatingProcessAccountSid, InitiatingProcessAccountDomain, InitiatingProcessAccountName,
+          InitiatingProcessFileName, InitiatingProcessCommandLine, InitiatingProcessVersionInfoCompanyName
+// Entity-level alert: one row per device + initiating account. arg_min is deliberate — the alert points at the FIRST
+// deletion attempt in the window (stable ReportId across overlapping runs, better dedup).
+| summarize (Timestamp, ReportId) = arg_min(Timestamp, ReportId),
+            EventCount      = count(),
+            ToolsUsed       = make_set(Tool, MaxContextItems),
+            CommandLines    = make_set(ProcessCommandLine, MaxContextItems),
+            ParentProcesses = make_set(InitiatingProcessFileName, MaxContextItems),
+            ParentCommandLine = take_any(InitiatingProcessCommandLine),
+            ParentCompany   = take_any(InitiatingProcessVersionInfoCompanyName),
+            ToolPath        = take_any(FolderPath),
+            ToolSHA256      = take_any(SHA256),
+            AccountDomain   = take_any(InitiatingProcessAccountDomain),
+            AccountName     = take_any(InitiatingProcessAccountName)
+         by DeviceId, DeviceName, InitiatingProcessAccountSid
+| where EventCount >= MinEvents
+// DedupFields: DeviceId, InitiatingProcessAccountSid
+| project-reorder Timestamp, DeviceName, DeviceId, AccountDomain, AccountName, InitiatingProcessAccountSid,
+                  ToolsUsed, CommandLines, ParentProcesses, ParentCommandLine, ParentCompany, EventCount,
+                  ToolPath, ToolSHA256, ReportId

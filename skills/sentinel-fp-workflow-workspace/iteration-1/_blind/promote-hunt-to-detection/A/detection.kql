@@ -1,0 +1,80 @@
+// [ORG] Possible C2 beaconing - rare public destination contacted persistently by few devices
+// Platform : Defender XDR custom detection (Advanced Hunting)   Version 1.0 (promoted from hunt.kql)
+// Frequency: Every hour  ->  platform lookback 4 h, evaluated on ingestion_time()  (fixed pair for XDR data)
+// Severity : Medium      MITRE: TA0011 Command and Control / T1071 Application Layer Protocol
+//            (the predicate asserts regular, persistent egress from one device to a rare public IP;
+//             it does not assert the protocol, so T1071 is the closest behaviour-level technique)
+//
+// DETECTION STRATEGY: a compromised device talks to its C2 on a sleep timer, so a single public IP
+//   that is contacted repeatedly across the whole lookback window by only a handful of devices is
+//   the cheapest observable shape of beaconing.
+// THE MECHANIC: implant sleeps N seconds, wakes, completes a TCP connection (ConnectionSuccess), repeats.
+// THE RESILIENCE: keyed on DeviceId + RemoteIP. The initiating process is context only - renamed or
+//   injected implants change the process name, not the destination or the cadence.
+// DATA: DeviceNetworkEvents / ActionType == "ConnectionSuccess" (MDE). Network telemetry is THROTTLED
+//   by the sensor (sampled: yes) -> counts can be undercounted; expect false negatives, never inflation.
+// TP LIKELIHOOD WHEN IT FIRES: medium - benign polling agents (monitoring, licence, update, chat and
+//   telemetry clients) produce the same shape; precision comes from the population filter and the
+//   environment-specific tuning region below.   COVERAGE CAVEAT: sleeps longer than ~15 min, beacons
+//   spread over more than MaxDevices hosts, and beacons that stop within the window are not caught.
+// ANALYST ACTION: pivot on RemoteIP (reputation, passive DNS, which other devices ever touched it),
+//   then on InitiatingProcessSHA256 (FileProfile prevalence / signer) and the Processes set.
+//
+// WINDOW CONTRACT: the service pre-filters EVERY table reference in a custom detection to the lookback
+//   (hourly => 4 h) on ingestion_time(); results outside it are ignored. Therefore this rule carries
+//   NO Timestamp/ingestion_time() filter of its own (a Timestamp filter would drop late-arriving events),
+//   and every threshold below is expressed relative to a 4 h window - NOT the hunt's 7 d / 12 h.
+//   First run after save scans 30 days: expect a one-off burst (see promotion-notes.md).
+let query_frequency = 1h;   // == rule frequency in the portal ("Every hour")
+let query_period    = 4h;   // == fixed XDR lookback for an hourly rule; applied by the platform, mirrored here for reviewers
+let BinSize         = 30m;  // persistence grain: 4 h / 30 m = 8 bins per window
+// --- Tunables (each states its meaning and the FP it trades against) ---
+let MaxDevices     = 3;     // population filter: RemoteIP seen by more devices in the window is shared infra (SaaS, CDN, update) -> not rare.
+                            //   Raising it admits more shared services (FPs); lowering it misses beacons spread over several compromised hosts (blind spot).
+let MinConnections = 16;    // per DeviceId+RemoteIP in 4 h  ~ one connection every 15 min. Hunt had no floor (it ranked). Lower -> slower sleeps caught, more chatty-but-benign clients alerted.
+let MinActiveBins  = 6;     // of 8 half-hour bins must contain traffic (>= 75 % of the window). Replaces the hunt's "span > 12 h": a burst of 16 downloads in one
+                            //   bin, or two connections 3 h apart, must NOT satisfy persistence. Lower -> catches intermittent beacons, admits bursty transfers.
+let MinSpanMinutes = 180;   // first-to-last connection must span >= 3 h of the 4 h window (the hunt's 12 h-of-7 d criterion, rescaled). Keeps short sessions out.
+// --- Stage 1: collapse to the investigated entity pair (device <-> destination) inside the lookback ---
+let Pairs = materialize(          // referenced twice (population filter + alert set)
+DeviceNetworkEvents
+| where ActionType == "ConnectionSuccess" and RemoteIPType == "Public"
+| where isnotempty(RemoteIP)
+// Begin environment-specific filter.
+// OPTION: exclude corporate egress / SaaS / vendor ranges (hoist to a let KnownGoodRanges = dynamic([...]) or a watchlist on the Sentinel variant):
+//         | where not(ipv4_is_in_any_range(RemoteIP, KnownGoodRanges))      // blind spot: C2 hosted inside an excluded range will not fire
+// OPTION: exclude known polling agents by SIGNER/product, never by file name (renamed binaries):
+//         | where InitiatingProcessVersionInfoCompanyName !in~ (KnownPollingVendors)  // blind spot: C2 injected into / impersonating that vendor's process
+// OPTION: tighten to bare-IP destinations (most C2 is IP-only; most SaaS has a hostname):  | where isempty(RemoteUrl)   // blind spot: domain-fronted / DNS-resolved C2
+// OPTION: exclude proxies, scanners and internet-facing servers whose fan-out is their job: | where DeviceId !in (HighFanOutDevices)
+// End environment-specific filter.
+| summarize hint.shufflekey = RemoteIP
+    (Timestamp, ReportId, DeviceName, InitiatingProcessFileName, InitiatingProcessSHA256) =
+        arg_max(Timestamp, ReportId, DeviceName, InitiatingProcessFileName, InitiatingProcessSHA256),   // latest event carries the XDR contract columns
+    Connections  = count(),
+    FirstSeen    = min(Timestamp),
+    LastSeen     = max(Timestamp),
+    ActiveBins   = dcount(bin(Timestamp, BinSize)),
+    Processes    = make_set(InitiatingProcessFileName, 10),   // capped: the hunt's unbounded make_set is a payload risk
+    RemotePorts  = make_set(RemotePort, 10)
+  by DeviceId, RemoteIP
+);
+// --- Stage 2: population filter - how many devices in the window touched each destination ---
+let RareDestinations = Pairs
+| summarize Devices = dcount(DeviceId) by RemoteIP
+| where Devices <= MaxDevices;
+// --- Stage 3: compound, floored thresholds on the pair; one row per DeviceId+RemoteIP ---
+Pairs
+| lookup kind=inner RareDestinations on RemoteIP          // small dimension set: lookup, not join
+| extend SpanMinutes = datetime_diff('minute', LastSeen, FirstSeen)
+| where Connections >= MinConnections
+    and ActiveBins >= MinActiveBins
+    and SpanMinutes >= MinSpanMinutes
+| extend AvgIntervalSeconds = toint(datetime_diff('second', LastSeen, FirstSeen) / (Connections - 1))   // Connections >= MinConnections, so never /0
+| project-reorder Timestamp, DeviceId, DeviceName, RemoteIP, RemotePorts, Devices, Connections, ActiveBins, SpanMinutes,
+                  AvgIntervalSeconds, FirstSeen, LastSeen, InitiatingProcessFileName, InitiatingProcessSHA256, Processes, ReportId
+// XDR contract: Timestamp, ReportId, DeviceId, DeviceName present after the final operator.
+// Impacted asset: Device (DeviceId). Related evidence: IP (RemoteIP), Process (InitiatingProcessFileName / InitiatingProcessSHA256).
+// Custom details: Devices, Connections, ActiveBins, SpanMinutes, AvgIntervalSeconds, RemotePorts, Processes.
+// DedupFields: DeviceId, RemoteIP - the platform collapses identical entity + custom-detail rows within a run and across the
+//   4 h / 1 h lookback overlap. Re-validate this key whenever the projection changes.

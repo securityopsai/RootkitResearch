@@ -1,0 +1,91 @@
+// =====================================================================
+// Defender XDR custom detection: Possible C2 beaconing to rare public IP
+// Promoted from hunt.kql ("rare public destination contacted many times")
+//
+// Rule settings (set in the XDR portal, not in KQL):
+//   Frequency        : Every hour   (XDR lookback for this cadence = 4h)
+//   Severity         : Medium
+//   Category         : Command and control
+//   MITRE            : T1071 (Application Layer Protocol), T1571 (Non-Standard Port)
+//   Impacted entity  : Device (DeviceId / DeviceName), Process (InitiatingProcess*)
+//   Actions          : none at first (review before enabling isolate/collect)
+//
+// Required output columns for a custom detection: Timestamp, ReportId and
+// at least one entity column (DeviceId). Both are carried from the FIRST
+// event of the beacon so that overlapping hourly runs produce the same key
+// and XDR de-duplicates them instead of alerting every hour.
+// =====================================================================
+
+// --- Tunables -------------------------------------------------------------
+let LookbackWindow   = 4h;    // must not exceed the XDR lookback for hourly rules
+let MinConnections   = 12;    // >= 12 successful connections in the window
+let MinSpanMinutes   = 120;   // must persist for at least 2h of the 4h window
+let MaxDevices       = 3;     // "rare": destination seen from <= 3 devices tenant-wide
+let MinAvgIntervalS  = 30;    // ignore sub-30s chatter (streaming, keep-alives)
+let MaxAvgIntervalS  = 1800;  // interval longer than 30 min cannot reach MinConnections
+let MaxJitterRatio   = 0.35;  // stdev(interval) / avg(interval); low = machine-like
+// Processes that legitimately keep a persistent, regular connection open.
+// Keep this list SHORT and sensor/AV-only; everything else is tuned via
+// the RemoteIP / process allowlists below once FPs are confirmed.
+let ProcessAllowlist = dynamic(["MsSense.exe", "SenseIR.exe", "SenseNdr.exe", "SenseCncProxy.exe", "MsMpEng.exe"]);
+// Confirmed-benign destinations (CIDR). Populate from FP review; start empty.
+let RemoteIpAllowlist = dynamic([]);
+// ---------------------------------------------------------------------------
+let Base =
+    DeviceNetworkEvents
+    | where Timestamp > ago(LookbackWindow)
+    | where ActionType == "ConnectionSuccess" and RemoteIPType == "Public"
+    | where isnotempty(DeviceId) and isnotempty(RemoteIP)
+    // belt-and-braces: never alert on RFC1918 space even if RemoteIPType is mis-derived.
+    // coalesce() keeps IPv6 rows (ipv4_* functions return null for them, and a null predicate drops the row).
+    | where coalesce(ipv4_is_private(RemoteIP), false) == false
+    | where InitiatingProcessFileName !in~ (ProcessAllowlist)
+    | where array_length(RemoteIpAllowlist) == 0
+         or coalesce(ipv4_is_in_any_range(RemoteIP, RemoteIpAllowlist), false) == false
+    | project Timestamp, ReportId, DeviceId, DeviceName, RemoteIP, RemotePort, RemoteUrl,
+              InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessCommandLine,
+              InitiatingProcessSHA256, InitiatingProcessAccountName,
+              InitiatingProcessVersionInfoCompanyName, InitiatingProcessVersionInfoProductName,
+              EpochSeconds = (Timestamp - datetime(1970-01-01)) / 1s;
+// Tenant-wide rarity of the destination inside the window
+let RareDestinations =
+    Base
+    | summarize Devices = dcount(DeviceId) by RemoteIP
+    | where Devices <= MaxDevices;
+// Per device + destination + process: volume, persistence and regularity
+Base
+| join kind=inner RareDestinations on RemoteIP
+| summarize
+    Connections    = count(),
+    FirstSeen      = min(Timestamp),
+    LastSeen       = max(Timestamp),
+    DistinctPorts  = dcount(RemotePort),
+    Ports          = make_set(RemotePort, 10),
+    RemoteUrls     = make_set(RemoteUrl, 5),
+    Epochs         = make_list(EpochSeconds, 5000),
+    arg_min(Timestamp, ReportId),              // stable alert key: first event of the beacon
+    take_any(DeviceName, InitiatingProcessFolderPath, InitiatingProcessCommandLine,
+             InitiatingProcessAccountName, InitiatingProcessVersionInfoCompanyName,
+             InitiatingProcessVersionInfoProductName)
+    by DeviceId, RemoteIP, InitiatingProcessFileName, InitiatingProcessSHA256, Devices
+| where Connections >= MinConnections
+| extend SpanMinutes = datetime_diff('minute', LastSeen, FirstSeen)
+| where SpanMinutes >= MinSpanMinutes
+// Inter-arrival statistics: sort timestamps, diff consecutive pairs, describe the series
+| extend Sorted = array_sort_asc(Epochs)
+| extend Intervals = series_subtract(array_slice(Sorted, 1, -1), array_slice(Sorted, 0, -2))
+| extend Stats = series_stats_dynamic(Intervals)
+| extend AvgIntervalSeconds = toreal(Stats.avg), StdevIntervalSeconds = toreal(Stats.stdev)
+| where AvgIntervalSeconds between (MinAvgIntervalS .. MaxAvgIntervalS)
+| extend JitterRatio = round(StdevIntervalSeconds / AvgIntervalSeconds, 3)
+| where JitterRatio <= MaxJitterRatio
+| project
+    Timestamp,            // = FirstSeen (arg_min), required by XDR
+    ReportId,             // of the first event, required by XDR
+    DeviceId, DeviceName, // impacted device entity
+    RemoteIP, Ports, RemoteUrls, Devices,
+    InitiatingProcessFileName, InitiatingProcessFolderPath, InitiatingProcessCommandLine,
+    InitiatingProcessSHA256, InitiatingProcessAccountName,
+    InitiatingProcessVersionInfoCompanyName, InitiatingProcessVersionInfoProductName,
+    Connections, SpanMinutes, FirstSeen, LastSeen, DistinctPorts,
+    AvgIntervalSeconds = round(AvgIntervalSeconds, 1), JitterRatio
