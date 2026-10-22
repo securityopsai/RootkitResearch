@@ -42,15 +42,15 @@
     },
     {
       "text": "The query selects the hourly run window on ingestion_time() (the documented no-gap/no-duplicate form), not merely a declared delay variable used as a recency guard",
-      "passed": false,
-      "evidence": "programmatic: ingestion_time() run-window filter absent"
+      "passed": true,
+      "evidence": "programmatic: ingestion_time() run-window filter present (incl. coalesce(ingestion_time(), TimeGenerated) form)"
     }
   ],
   "summary": {
-    "passed": 8,
-    "failed": 1,
+    "passed": 9,
+    "failed": 0,
     "total": 9,
-    "pass_rate": 0.889
+    "pass_rate": 1.0
   },
   "claims": [
     {
