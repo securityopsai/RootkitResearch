@@ -9,6 +9,8 @@
     "lsass.exe and other file-name comparisons in detection.kql are case-insensitive (=~, in~, has) and the first-seen key includes a process identity stronger than the display name alone (SHA1/SHA256/signer or FolderPath)",
     "Tunables (baseline length, gap, any threshold) are declared in let statements at the top of detection.kql rather than inline literals",
     "rule.md maps the detection to MITRE ATT&CK T1003.001 (OS Credential Dumping: LSASS Memory)",
-    "rule.md names at least one concrete blind spot or evasion (e.g. parent-PID spoofing, a tool seen once during the baseline, baseline poisoning, slow attacker) and at least one named benign source of lsass access (AV/EDR, backup, monitoring agents)"
+    "rule.md names at least one concrete blind spot or evasion (e.g. parent-PID spoofing, a tool seen once during the baseline, baseline poisoning, slow attacker) and at least one named benign source of lsass access (AV/EDR, backup, monitoring agents)",
+    "The baseline window ends a stated guard margin before the recent window begins (e.g. baseline ends at ago(lookback + margin)), not merely at the adjacent 4 h boundary",
+    "rule.md describes the hourly rule's lookback as evaluated on ingestion time and does not claim that only events with Timestamp in the last 4 h are evaluated"
   ]
 }

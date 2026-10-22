@@ -1,0 +1,117 @@
+{
+  "expectations": [
+    {
+      "text": "detection.kql projects Timestamp, ReportId and DeviceId in its final output (XDR required columns), recovered via arg_max/arg_min after any summarize",
+      "passed": true,
+      "evidence": "Lines 104-118: `summarize (Timestamp, ReportId, ...) = arg_min(Timestamp, ReportId, ...) ... by DeviceId, DeviceName, ProcessKey, InitiatingProcessFileName`; final `project-reorder Timestamp, DeviceId, ... ReportId` (lines 127-131). The inner join subquery projects only FleetDeviceCount/FleetEventCount/ProcessKey so no column collision; 15 names on the tuple LHS match 15 arg_min return columns."
+    },
+    {
+      "text": "detection.kql computes the 'seen before' baseline from a window that ends before the recent window starts (a guard gap such as between(ago(30d)..ago(1d)) vs > ago(1d)), not an overlapping window",
+      "passed": true,
+      "evidence": "Line 79: `| where Timestamp between (ago(BaselineDays) .. ago(GuardGap))` with `GuardGap = query_period + query_wait` = 5h (line 30); recent half line 89 `ingestion_time() > ago(query_period)` (4h). Baseline ends 1h before the recent window opens. Auto-grade confirmed."
+    },
+    {
+      "text": "Every join in detection.kql states an explicit kind= (or the comparison uses !in / leftanti anti-join); there is no bare join",
+      "passed": true,
+      "evidence": "Two joins, both explicit: line 101 `join kind=leftanti Known on ProcessKey`, line 119 `join kind=inner (...) on ProcessKey`. Grep found no bare `join`."
+    },
+    {
+      "text": "detection.kql does not restrict the recent-window rows with a Timestamp filter of 4h or less (XDR evaluates the lookback on ingestion_time); any explicit Timestamp bound applies only to the baseline half",
+      "passed": true,
+      "evidence": "Recent half (lines 87-97) carries no Timestamp predicate at all; its only time bound is `ingestion_time() > ago(query_period)` (line 89). The sole explicit Timestamp bound is the baseline `between` on line 79. Comment on line 24 states the ingestion_time rationale."
+    },
+    {
+      "text": "lsass.exe and other file-name comparisons in detection.kql are case-insensitive (=~, in~, has) and the first-seen key includes a process identity stronger than the display name alone (SHA1/SHA256/signer or FolderPath)",
+      "passed": true,
+      "evidence": "`FileName =~ \"lsass.exe\"` on lines 81 and 91; exclusion/trust lists compared with `!in~` (lines 93, 95). Key = ProcessKeyOf(InitiatingProcessFolderPath, InitiatingProcessFileName, InitiatingProcessVersionInfoCompanyName) (lines 71-75): normalised full FolderPath plus PE CompanyName, stronger than the display name."
+    },
+    {
+      "text": "Tunables (baseline length, gap, any threshold) are declared in let statements at the top of detection.kql rather than inline literals",
+      "passed": true,
+      "evidence": "Lines 22-55: query_frequency/query_period/query_wait, BaselineDays, GuardGap, MinBaselineKeys, MaxDevicesPerNewKey, IncludeCompanyInKey, RequireVmRead, ExcludedProcessKeys, TrustedCompanyNames all declared as `let` before any tabular expression (17 lets). Only inline literal is the PROCESS_VM_READ bit (binary_and(DesiredAccess, 16), line 97), a Windows constant tied to the RequireVmRead knob rather than a threshold."
+    },
+    {
+      "text": "rule.md maps the detection to MITRE ATT&CK T1003.001 (OS Credential Dumping: LSASS Memory)",
+      "passed": true,
+      "evidence": "rule.md line 12: 'Credential Access \u00b7 **T1003.001 \u2014 OS Credential Dumping: LSASS Memory**'; also kql header line 3."
+    },
+    {
+      "text": "rule.md names at least one concrete blind spot or evasion (e.g. parent-PID spoofing, a tool seen once during the baseline, baseline poisoning, slow attacker) and at least one named benign source of lsass access (AV/EDR, backup, monitoring agents)",
+      "passed": true,
+      "evidence": "Blind spots (rule.md lines 134-158): 'use an image already in the baseline' (taskmgr/rundll32 comsvcs/werfault), 'timing / slow and low ... baselined and silent for 30 d', 'mass deployment', 'path squatting', 'Self-learning: after the first alert the attacker's image is baselined after 5 h' (baseline poisoning, also lines 109-113). Benign sources (lines 120-129): 'AV/EDR pilot engine, vulnerability scanner agent, MDI sensor', 'Backup / inventory agents', 'Process Explorer, Process Hacker/System Informer, WinDbg'."
+    },
+    {
+      "text": "The baseline window ends a stated guard margin before the recent window begins (e.g. baseline ends at ago(lookback + margin)), not merely at the adjacent 4 h boundary",
+      "passed": true,
+      "evidence": "manual (from blind-grader evidence + file check): baseline `between (ago(BaselineDays) .. ago(GuardGap))` with GuardGap = 4h + 1h (rule.md: 'ending 5 h ago')"
+    },
+    {
+      "text": "rule.md describes the hourly rule's lookback as evaluated on ingestion time and does not claim that only events with Timestamp in the last 4 h are evaluated",
+      "passed": true,
+      "evidence": "manual (from blind-grader evidence + file check): rule.md line 54: recent half 'scoped only by ingestion_time() > ago(4h)'; line 104 explains the ingestion_time lookback"
+    }
+  ],
+  "summary": {
+    "passed": 10,
+    "failed": 0,
+    "total": 10,
+    "pass_rate": 1.0
+  },
+  "claims": [
+    {
+      "claim": "detection.kql is plausibly valid Advanced Hunting KQL",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Parens/brackets/braces balance (50/50, 2/2, 2/2 after stripping strings and comments). All 21 referenced columns exist in the DeviceEvents schema on Microsoft Learn; no InitiatingProcessSignerType. Lambda lets (NormalisePath, ProcessKeyOf) use valid `(p: string) { ... }` syntax; tuple-named arg_min, toscalar(Known | count), !in~ on dynamic arrays, project-away ProcessKey1 are all legal. Unused `query_frequency` let is harmless. Not executed against a tenant."
+    },
+    {
+      "claim": "The 30-day baseline is reachable inside an hourly rule",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Baseline is bounded by an explicit `Timestamp between (ago(30d) .. ago(5h))` (line 79), independent of the 4h lookback; only the recent side is scoped by ingestion_time() > ago(4h). The novelty decision is correct for late-arriving events whose Timestamp is within the last 5h. Caveat (documented at rule.md lines 151-154): an event with Timestamp older than 5h that is ingested now lands in both baseline and recent and self-suppresses, because the two halves are cut on different clocks."
+    },
+    {
+      "claim": "rule.md states the platform facts correctly (1h/4h pair, ingestion_time lookback, first-run 30d scan, 150 cap)",
+      "type": "factual",
+      "verified": true,
+      "evidence": "rule.md lines 14, 54-56, 104-105, 20; kql comment lines 23-24. Consistent with the platform facts supplied to the grader."
+    },
+    {
+      "claim": "Rule is lint-clean ('python3 -I scripts/kql_lint.py ... clean at v1.0', rule.md line 202)",
+      "type": "process",
+      "verified": false,
+      "evidence": "No transcript or lint output available; unverifiable."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "detection.kql computes the 'seen before' baseline from a window that ends before the recent window starts (a guard gap such as between(ago(30d)..ago(1d)) vs > ago(1d)), not an overlapping window",
+        "reason": "The assertion's own example (between(ago(30d)..ago(1d)) vs > ago(1d)) is an adjacent partition with no gap, so it cannot discriminate a true guard margin (run A: baseline ends at ago(4h+1h)) from a zero-gap boundary (run B: <= ago(4h) vs > ago(4h)); it also does not require the baseline and recent halves to be cut on the same clock (Timestamp vs ingestion_time), which is where the real self-suppression bug lives."
+      },
+      {
+        "assertion": "detection.kql does not restrict the recent-window rows with a Timestamp filter of 4h or less (XDR evaluates the lookback on ingestion_time); any explicit Timestamp bound applies only to the baseline half",
+        "reason": "The machine pre-grade for this assertion only pattern-matched literal '> ago(4h)'; run B hides the 4h Timestamp filter behind 'let detection_window = 4h' and was mis-passed. The check needs let-resolution or a semantic reading."
+      },
+      {
+        "assertion": "Tunables (baseline length, gap, any threshold) are declared in let statements at the top of detection.kql rather than inline literals",
+        "reason": "Counting let statements is trivially satisfied; every run has a let block. A discriminating version would check that no magic number drives a decision outside the let block (e.g. run A's binary_and(DesiredAccess, 16))."
+      },
+      {
+        "reason": "No assertion checks that rule.md states the platform's time semantics correctly. Run B's rule.md asserts 'Hourly rules only evaluate events whose Timestamp falls in the last 4h', which contradicts the ingestion_time() fact the eval itself relies on, yet nothing fails it."
+      },
+      {
+        "reason": "No assertion covers the alerting grain / dedup entity (one row per key fleet-wide vs per device) or the 150-alerts-per-run cap handling, although all three runs make different choices there and it changes what an analyst actually receives."
+      },
+      {
+        "reason": "No assertion checks that a hash-mode key uses a populated column. Microsoft Learn notes DeviceEvents InitiatingProcessSHA256 'is usually not populated \u2014 use the SHA1 column'; run B's baseline_on_hash=true keys on SHA256 and would silently drop most rows via isnotempty(ProcessKey)."
+      }
+    ],
+    "overall": "Run A satisfies all eight assertions with real substance, but the assertion set would also have passed a weaker design: assertions 2 and 6 are satisfiable by syntax alone, and the eval has no check on documentation accuracy or alert grain."
+  }
+}

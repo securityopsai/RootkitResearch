@@ -1,0 +1,131 @@
+{
+  "expectations": [
+    {
+      "text": "detection.kql projects Timestamp, ReportId and DeviceId in its final output (XDR required columns), recovered via arg_max/arg_min after any summarize",
+      "passed": true,
+      "evidence": "Line 91 `summarize arg_max(Timestamp, *), ... by ProcKey, DeviceId` in RecentOpens; final `project Timestamp, ReportId, DeviceId, DeviceName, ...` (lines 100-102) after `join kind=inner (RecentOpens) on ProcKey`. NewKeys contributes only ProcKey/FleetFirst*/Fleet*Count so Timestamp/ReportId/DeviceId come unambiguously from the arg_max row. Grain is one row per (process key, device)."
+    },
+    {
+      "text": "detection.kql computes the 'seen before' baseline from a window that ends before the recent window starts (a guard gap such as between(ago(30d)..ago(1d)) vs > ago(1d)), not an overlapping window",
+      "passed": true,
+      "evidence": "OVERRIDE of auto-grade (which looked for an explicit `.. ago(x)` or `<= ago(x)` literal). The baseline is computed implicitly but non-overlapping: lines 77-84 `summarize FleetFirstIngested = min(IngestedAt) ... by ProcKey | where FleetFirstIngested > ago(LookbackWindow)` marks a key new only if NO record of it was ingested before ago(4h); the recent half is `IngestedAt > ago(LookbackWindow)` (line 90). 'Seen before' = ingestion_time <= ago(4h), 'recent' = ingestion_time > ago(4h): disjoint and adjacent on the same clock, the same shape as the assertion's own example, and a recent event cannot whitelist itself. No extra margin beyond the boundary, like run B."
+    },
+    {
+      "text": "Every join in detection.kql states an explicit kind= (or the comparison uses !in / leftanti anti-join); there is no bare join",
+      "passed": true,
+      "evidence": "Single join, explicit: line 99 `| join kind=inner (RecentOpens) on ProcKey`. Novelty itself is computed by summarize/min rather than an anti-join. No bare join."
+    },
+    {
+      "text": "detection.kql does not restrict the recent-window rows with a Timestamp filter of 4h or less (XDR evaluates the lookback on ingestion_time); any explicit Timestamp bound applies only to the baseline half",
+      "passed": true,
+      "evidence": "Recent rows are selected by `IngestedAt > ago(LookbackWindow)` (line 90) where IngestedAt = ingestion_time() (line 55); novelty uses min(IngestedAt) (lines 79-84). The only Timestamp predicate is the 30d scan bound `Timestamp > ago(BaselineWindow)` (line 51) on the shared source set, which is the baseline horizon and not a <=4h restriction; a late-arriving event with any Timestamp inside 30d still reaches the recent half and fires. Header comment lines 13-18 states the ingestion_time rationale explicitly."
+    },
+    {
+      "text": "lsass.exe and other file-name comparisons in detection.kql are case-insensitive (=~, in~, has) and the first-seen key includes a process identity stronger than the display name alone (SHA1/SHA256/signer or FolderPath)",
+      "passed": true,
+      "evidence": "OVERRIDE of auto-grade (which looked for a literal `=~ \"lsass.exe\"`). Line 53 `| where FileName in~ (TargetProcessNames)` with TargetProcessNames = dynamic([\"lsass.exe\"]) is case-insensitive; `endswith` on line 64 is case-insensitive in KQL. Key = NormPath built from tolower(InitiatingProcessFolderPath) + file name (lines 63-73), or InitiatingProcessSHA1 in hash mode: stronger than display name. Minor: line 74 `ProcKey !in (ExcludedProcessKeys)` is case-sensitive, but ProcKey is already lower-cased and rule.md line 62 instructs copying keys from the alert, so the comparison is effectively case-insensitive on the data side (a mis-cased exclusion would fail open, not cause a miss)."
+    },
+    {
+      "text": "Tunables (baseline length, gap, any threshold) are declared in let statements at the top of detection.kql rather than inline literals",
+      "passed": true,
+      "evidence": "Lines 23-46 'Tunables' block: LookbackWindow, BaselineWindow, TargetProcessNames, MemoryAccessBits, RequireMemoryAccess, BaselineKeyMode, SuppressRolloutDeviceCount, ExcludedProcessKeys all as `let` before any tabular expression (11 lets). Remaining inline numbers are make_set caps (16), output shaping."
+    },
+    {
+      "text": "rule.md maps the detection to MITRE ATT&CK T1003.001 (OS Credential Dumping: LSASS Memory)",
+      "passed": true,
+      "evidence": "rule.md line 11: 'Technique **T1003.001 OS Credential Dumping: LSASS Memory**'; also kql header lines 7-8."
+    },
+    {
+      "text": "rule.md names at least one concrete blind spot or evasion (e.g. parent-PID spoofing, a tool seen once during the baseline, baseline poisoning, slow attacker) and at least one named benign source of lsass access (AV/EDR, backup, monitoring agents)",
+      "passed": true,
+      "evidence": "Blind spots (rule.md lines 88-98): 'Any accessor already in the 30-day baseline ... (including your own red team's, or an admin's procdump64.exe left in c:\\tools\\)', 'Living-off-the-land via an already-baselined host process', '30-day horizon only', 'names the dropper after an already-baselined image in an already-baselined directory', 'Rollout suppression, if enabled, hides ... a mass-dump stage'. Benign sources (lines 74-84): 'AV engines, EDR sensors, vulnerability scanners, DLP agents, Sysinternals', 'Backup, VDI, and credential-management agents', 'windbg, procexp64, procmon'."
+    },
+    {
+      "text": "The baseline window ends a stated guard margin before the recent window begins (e.g. baseline ends at ago(lookback + margin)), not merely at the adjacent 4 h boundary",
+      "passed": false,
+      "evidence": "manual (from blind-grader evidence + file check): novelty cut at `FleetFirstIngested > ago(LookbackWindow)` vs baseline `<= ago(4h)` on the same clock \u2014 adjacent boundary, no margin"
+    },
+    {
+      "text": "rule.md describes the hourly rule's lookback as evaluated on ingestion time and does not claim that only events with Timestamp in the last 4 h are evaluated",
+      "passed": true,
+      "evidence": "manual (from blind-grader evidence + file check): rule.md line 43: 'novelty and candidate selection use ingestion_time(), which is what the service itself evaluates the lookback on'"
+    }
+  ],
+  "summary": {
+    "passed": 9,
+    "failed": 1,
+    "total": 10,
+    "pass_rate": 0.9
+  },
+  "claims": [
+    {
+      "claim": "detection.kql is plausibly valid Advanced Hunting KQL",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Brackets balance (39/39, 2/2). All 28 referenced columns, including InitiatingProcessUniqueId, IsInitiatingProcessRemoteSession, InitiatingProcessRemoteSessionIP, InitiatingProcessMD5 and ProcessId, exist in the DeviceEvents schema on Microsoft Learn; no InitiatingProcessSignerType. `long(0x7A)`, `in~` on a dynamic array, `endswith` with an expression RHS, arg_max(Timestamp, *) by key, tohex(), and a `//` comment inside dynamic([...]) are legal. Not executed against a tenant."
+    },
+    {
+      "claim": "The 30-day baseline is reachable inside an hourly rule",
+      "type": "quality",
+      "verified": true,
+      "evidence": "The scan is bounded by an explicit `Timestamp > ago(30d)` (line 51); the novelty decision uses min(ingestion_time()) per key against ago(4h) (lines 79-84), so the baseline does not depend on the platform lookback and both halves are cut on the same clock. This is the only run where a late-arriving event is handled consistently (no self-suppression and no miss). Cost: min()/arg_max over 30 days of OpenProcessApiCall rows every hour; rule.md line 47 flags the resource indicator as a review gate."
+    },
+    {
+      "claim": "rule.md states the platform facts correctly (1h/4h pair, ingestion_time lookback, first-run 30d scan, 150 cap, required columns)",
+      "type": "factual",
+      "verified": true,
+      "evidence": "rule.md lines 8, 27, 41-47 and kql header lines 13-20; consistent with the supplied platform facts."
+    },
+    {
+      "claim": "SuppressRolloutDeviceCount defaults to 0 (off), so unlike A and B a mass-deployment dumper is not suppressed by default",
+      "type": "factual",
+      "verified": true,
+      "evidence": "kql line 40 `let SuppressRolloutDeviceCount = 0;` with rationale in comments lines 37-39 and rule.md line 59."
+    },
+    {
+      "claim": "rule.md item 9: a decoy lsass.exe elsewhere 'can generate noise but cannot cause a miss'",
+      "type": "factual",
+      "verified": true,
+      "evidence": "The query filters FileName only (line 53), not FolderPath, so an extra lsass.exe adds rows but never removes real ones. Run B instead pins FolderPath to System32."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "detection.kql computes the 'seen before' baseline from a window that ends before the recent window starts (a guard gap such as between(ago(30d)..ago(1d)) vs > ago(1d)), not an overlapping window",
+        "reason": "The assertion's own example (between(ago(30d)..ago(1d)) vs > ago(1d)) is an adjacent partition with no gap, so it cannot discriminate a true guard margin (run A: baseline ends at ago(4h+1h)) from a zero-gap boundary (run B: <= ago(4h) vs > ago(4h)); it also does not require the baseline and recent halves to be cut on the same clock (Timestamp vs ingestion_time), which is where the real self-suppression bug lives."
+      },
+      {
+        "assertion": "detection.kql does not restrict the recent-window rows with a Timestamp filter of 4h or less (XDR evaluates the lookback on ingestion_time); any explicit Timestamp bound applies only to the baseline half",
+        "reason": "The machine pre-grade for this assertion only pattern-matched literal '> ago(4h)'; run B hides the 4h Timestamp filter behind 'let detection_window = 4h' and was mis-passed. The check needs let-resolution or a semantic reading."
+      },
+      {
+        "assertion": "Tunables (baseline length, gap, any threshold) are declared in let statements at the top of detection.kql rather than inline literals",
+        "reason": "Counting let statements is trivially satisfied; every run has a let block. A discriminating version would check that no magic number drives a decision outside the let block (e.g. run A's binary_and(DesiredAccess, 16))."
+      },
+      {
+        "reason": "No assertion checks that rule.md states the platform's time semantics correctly. Run B's rule.md asserts 'Hourly rules only evaluate events whose Timestamp falls in the last 4h', which contradicts the ingestion_time() fact the eval itself relies on, yet nothing fails it."
+      },
+      {
+        "reason": "No assertion covers the alerting grain / dedup entity (one row per key fleet-wide vs per device) or the 150-alerts-per-run cap handling, although all three runs make different choices there and it changes what an analyst actually receives."
+      },
+      {
+        "reason": "No assertion checks that a hash-mode key uses a populated column. Microsoft Learn notes DeviceEvents InitiatingProcessSHA256 'is usually not populated \u2014 use the SHA1 column'; run B's baseline_on_hash=true keys on SHA256 and would silently drop most rows via isnotempty(ProcessKey)."
+      },
+      {
+        "assertion": "detection.kql computes the 'seen before' baseline from a window that ends before the recent window starts (a guard gap such as between(ago(30d)..ago(1d)) vs > ago(1d)), not an overlapping window",
+        "reason": "The machine pre-grade failed this run for lacking a syntactic baseline window, although its min(ingestion_time) formulation is a correct non-overlapping baseline. Regex pre-grades on this assertion need a semantic fallback."
+      },
+      {
+        "assertion": "lsass.exe and other file-name comparisons in detection.kql are case-insensitive (=~, in~, has) and the first-seen key includes a process identity stronger than the display name alone (SHA1/SHA256/signer or FolderPath)",
+        "reason": "The pre-grade failed this run for not containing the literal `=~ \"lsass.exe\"` although it uses `in~` over a let-bound list, one of the operators the assertion itself names."
+      }
+    ],
+    "overall": "Run C is the only run whose baseline and recent halves are cut on the same clock (ingestion_time), yet the machine pre-grades failed it twice on syntax; the assertions are sound in intent but the automated checks for 2, 4 and 5 are pattern-matchers that reward one phrasing of a correct idea."
+  }
+}
