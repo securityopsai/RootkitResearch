@@ -81,9 +81,10 @@ PATTERNS = {
         "description": "XDR custom detection: entity-level dedup preserving required columns",
         "template": """{base_table}
 | summarize (Timestamp, ReportId) = arg_max(Timestamp, ReportId),
-    EventCount = count() by {entity_field}, DeviceId, DeviceName
+    EventCount = count() by {group_by}
 | where EventCount > {threshold}""",
-        "params": ["base_table", "entity_field", "threshold"]
+        "params": ["base_table", "group_by", "threshold"],
+        "notes": "group_by must include DeviceId (and DeviceName for display), e.g. 'DeviceId, DeviceName' or 'InitiatingProcessAccountSid, DeviceId, DeviceName' — listing DeviceId twice is a KQL error"
     },
 
     "asim_normalized": {
@@ -274,6 +275,8 @@ def list_patterns():
         print(f"  {name}")
         print(f"    {info['description']}")
         print(f"    Required params: {', '.join(info['params'])}")
+        if info.get("notes"):
+            print(f"    Note: {info['notes']}")
         print()
 
 
