@@ -2,13 +2,13 @@ id: da27f4cb-4fd5-41eb-9fbc-ff02e27d764e
 name: Password spray against Entra ID from a single source IP
 description: |
   Identifies a password spray against Entra ID: one source IP generating invalid-password failures (ResultType 50126, 50053, 50034)
-  against at least 10 distinct accounts within the hourly run window, with at most 3 failures per sprayed account (more per account is
-  brute force, covered by a separate rule) and more failures than successes from that IP (self-tunes corporate egress NAT).
+  against at least 10 distinct accounts in the hourly run window, with at most 3 failures per sprayed account (more is brute force,
+  left to a separate rule) and more failures than successes from that IP (self-tunes corporate egress NAT).
   Accounts whose password was accepted from the same IP (success or an MFA / Conditional Access interrupt code) are listed in
-  CredentialValidatedAccounts and raise the severity to High; they are the response priority (reset password, revoke sessions).
-  One alert per source IP; incidents are grouped by IP over 5h so a spray that runs across several hours stays one incident.
-  Blind spots: sprays through non-interactive flows (AADNonInteractiveUserSignInLogs), sprays spread across many IPs (each below the
-  floor), sprays slower than 10 accounts per hour, and sprays launched from inside an excluded corporate egress range.
+  CredentialValidatedAccounts and raise the severity to High; reset those passwords and revoke sessions first.
+  One alert per source IP; incidents are grouped by IP over 5h so a multi-hour spray stays one incident.
+  Blind spots: non-interactive flows (AADNonInteractiveUserSignInLogs), sprays spread across many IPs or slower than 10 accounts
+  per hour, and sprays launched from inside an excluded corporate egress range.
   Ref: https://attack.mitre.org/techniques/T1110/003/
 severity: Medium
 requiredDataConnectors:
