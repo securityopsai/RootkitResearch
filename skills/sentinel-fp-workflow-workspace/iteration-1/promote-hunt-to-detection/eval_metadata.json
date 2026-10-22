@@ -9,6 +9,10 @@
     "promotion-notes.md states that an hourly XDR custom detection has a fixed lookback (4 hours) so the hunt's 7-day window cannot be kept as-is, and proposes a concrete resolution (shorter window, a 24h/30d schedule, or a persisted baseline)",
     "promotion-notes.md addresses alert volume and deduplication (the 150-alerts-per-run cap, platform dedup, or aggregating to one row per device/destination)",
     "promotion-notes.md names MDE network telemetry sampling/throttling or shared destinations (CDNs, Windows Update, telemetry endpoints) as a source of false negatives/positives",
-    "promotion-notes.md includes a post-deployment check such as the first-run 30-day scan noise burst, an expected volume, or a scheduled review"
+    "promotion-notes.md includes a post-deployment check such as the first-run 30-day scan noise burst, an expected volume, or a scheduled review",
+    "detection.kql contains no Timestamp > ago() / Timestamp >= ago() filter on the recent rows (XDR evaluates the lookback on ingestion_time; such a filter drops late-arriving events)",
+    "promotion-notes.md explicitly mentions the 150-alerts-per-run cap of XDR custom detections",
+    "promotion-notes.md explicitly names MDE network telemetry sampling or throttling as a false-negative source (not only shared destinations)",
+    "promotion-notes.md explicitly mentions the first-run 30-day scan (initial noise burst) or schedules a dated post-deploy review"
   ]
 }

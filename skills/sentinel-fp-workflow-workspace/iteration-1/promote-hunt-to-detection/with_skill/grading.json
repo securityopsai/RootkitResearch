@@ -1,0 +1,121 @@
+{
+  "expectations": [
+    {
+      "text": "detection.kql replaces the sort by Connections desc ranking with explicit threshold conditions on named let tunables",
+      "passed": true,
+      "evidence": "No 'sort by'/'order by' anywhere in A/detection.kql. Lines 32-37 hoist let MaxDevices=3, MinConnections=16, MinActiveBins=6, MinSpanMinutes=180; lines 70-72 apply them: '| where Connections >= MinConnections and ActiveBins >= MinActiveBins and SpanMinutes >= MinSpanMinutes'."
+    },
+    {
+      "text": "detection.kql keeps a population/prevalence filter (Devices <= N or equivalent) together with a minimum connection count, rather than ranking alone",
+      "passed": true,
+      "evidence": "Lines 63-65: 'let RareDestinations = Pairs | summarize Devices = dcount(DeviceId) by RemoteIP | where Devices <= MaxDevices;' then line 68 '| lookup kind=inner RareDestinations on RemoteIP' combined with line 70 'Connections >= MinConnections' (MinConnections = 16)."
+    },
+    {
+      "text": "detection.kql returns Timestamp, ReportId and DeviceId (aggregation per device or arg_max/arg_min recovery), not only per-RemoteIP rows",
+      "passed": true,
+      "evidence": "Lines 51-60: summarize ... '(Timestamp, ReportId, DeviceName, InitiatingProcessFileName, InitiatingProcessSHA256) = arg_max(Timestamp, ReportId, ...)' ... 'by DeviceId, RemoteIP'. Final project-reorder (lines 74-75) carries Timestamp, DeviceId, DeviceName, ReportId. One row per DeviceId+RemoteIP, not per RemoteIP only."
+    },
+    {
+      "text": "Every make_set / make_list call in detection.kql includes a size cap argument",
+      "passed": true,
+      "evidence": "Only two calls: line 58 'make_set(InitiatingProcessFileName, 10)' and line 59 'make_set(RemotePort, 10)'. No make_list. Both capped."
+    },
+    {
+      "text": "promotion-notes.md states that an hourly XDR custom detection has a fixed lookback (4 hours) so the hunt's 7-day window cannot be kept as-is, and proposes a concrete resolution (shorter window, a 24h/30d schedule, or a persisted baseline)",
+      "passed": true,
+      "evidence": "Notes line 5: 'frequency Every hour (fixed platform lookback 4 h)'; lines 17-21: 'An hourly rule therefore never sees more than 4 h of data ... The hunt's Hours > 12 is structurally unsatisfiable inside a 4 h window, so the criterion was rescaled rather than copied' (6 of 8 bins, span >= 3 h). Also proposes alternatives, lines 26-27: 'The Sentinel variant (14 d period) or an XDR Every 24 hours / 30 d variant is where the original 7 d / 12 h criterion survives'."
+    },
+    {
+      "text": "promotion-notes.md addresses alert volume and deduplication (the 150-alerts-per-run cap, platform dedup, or aggregating to one row per device/destination)",
+      "passed": true,
+      "evidence": "Notes line 80: 'the first run can hit the 150-alert cap'; line 88: 'Volume per run vs 150. Sustained counts anywhere near 150 mean the rule is silently dropping detections'; line 46: 'DedupFields: DeviceId, RemoteIP ... Platform dedups identical entity + custom-detail rows within a run and across the 4 h / 1 h overlap'; line 37: one row per DeviceId + RemoteIP."
+    },
+    {
+      "text": "promotion-notes.md names MDE network telemetry sampling/throttling or shared destinations (CDNs, Windows Update, telemetry endpoints) as a source of false negatives/positives",
+      "passed": true,
+      "evidence": "Notes lines 89-90: 'sustained zero for more than a week means the throttled network telemetry or an exclusion has swallowed it'; line 96: 'MDE network throttling (false negatives)'; line 40: 'or shared SaaS/CDN endpoints alert'; lines 91-92 list update agents, telemetry clients as BTP classes. detection.kql header line 14-15 also states 'Network telemetry is THROTTLED by the sensor (sampled: yes)'."
+    },
+    {
+      "text": "promotion-notes.md includes a post-deployment check such as the first-run 30-day scan noise burst, an expected volume, or a scheduled review",
+      "passed": true,
+      "evidence": "Notes line 78: 'First run burst. On save the platform scans 30 days, not 4 h ... the first run can hit the 150-alert cap. Treat that run as a baseline review'; line 98: '7-day post-deploy review: classify every alert TP / BTP / FP'; line 63: 'target far below 150 per run'."
+    },
+    {
+      "text": "detection.kql contains no Timestamp > ago() / Timestamp >= ago() filter on the recent rows (XDR evaluates the lookback on ingestion_time; such a filter drops late-arriving events)",
+      "passed": true,
+      "evidence": "programmatic: Timestamp > ago() filter ABSENT"
+    },
+    {
+      "text": "promotion-notes.md explicitly mentions the 150-alerts-per-run cap of XDR custom detections",
+      "passed": true,
+      "evidence": "programmatic: '150' found"
+    },
+    {
+      "text": "promotion-notes.md explicitly names MDE network telemetry sampling or throttling as a false-negative source (not only shared destinations)",
+      "passed": true,
+      "evidence": "programmatic: sampling/throttling term found"
+    },
+    {
+      "text": "promotion-notes.md explicitly mentions the first-run 30-day scan (initial noise burst) or schedules a dated post-deploy review",
+      "passed": true,
+      "evidence": "programmatic: first-run/30-day term found"
+    }
+  ],
+  "summary": {
+    "passed": 12,
+    "failed": 0,
+    "total": 12,
+    "pass_rate": 1.0
+  },
+  "claims": [
+    {
+      "claim": "detection.kql is plausibly valid Advanced Hunting KQL",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Parentheses balanced (16/16 after comment strip). Columns used (Timestamp, ReportId, DeviceId, DeviceName, ActionType, RemoteIPType, RemoteIP, RemotePort, InitiatingProcessFileName, InitiatingProcessSHA256) are real DeviceNetworkEvents columns. No Timestamp/ago() filter at all (lines 23-26 explain why), so no late-arrival drop. materialize()+lookup kind=inner+arg_max tuple naming are all standard. Minor syntactic risk: 'summarize hint.shufflekey = RemoteIP' is immediately followed by a parenthesised name tuple '(Timestamp, ReportId, ...) = arg_max(...)' on the next line; the hint value is a column name reference so this should parse, but it is the one spot a validator should confirm. AvgIntervalSeconds division by (Connections - 1) is safe because Connections >= 16 is enforced first."
+    },
+    {
+      "claim": "Notes claim 'scripts/kql_lint.py --platform xdr detection.kql: 0 errors, 0 warnings' and that the hunt scored W005/W012/W020/I011",
+      "type": "process",
+      "verified": false,
+      "evidence": "No transcript or lint output is available in the run folder; cannot verify the lint was run."
+    },
+    {
+      "claim": "Population filter uses the same 4 h window as the alert, so prevalence is weaker than over 7 d",
+      "type": "factual",
+      "verified": true,
+      "evidence": "RareDestinations is derived from the same Pairs materialisation (lines 63-65) which has no time filter and is therefore bounded by the platform's 4 h lookback; the note at line 25 is accurate."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "promotion-notes.md names MDE network telemetry sampling/throttling or shared destinations (CDNs, Windows Update, telemetry endpoints) as a source of false negatives/positives",
+        "reason": "The 'or shared destinations' branch is satisfied by any FP list that mentions 'CDN' or 'telemetry' (runs B and C pass this way without ever mentioning MDE sampling/throttling). The platform fact the eval cares about (throttled network telemetry => false negatives) is only checked when the run happens to choose that branch; consider making the throttling/FN statement its own assertion."
+      },
+      {
+        "assertion": "promotion-notes.md includes a post-deployment check such as the first-run 30-day scan noise burst, an expected volume, or a scheduled review",
+        "reason": "'A post-deployment check such as ...' passes any 'what to watch' section. Run C passes with no mention of the first-run 30-day scan, no numeric expected volume and no scheduled review date, only generic 'watch volume in the first 24-48h'. Consider requiring the 30-day first-run scan specifically, since it is the one platform behaviour that will surprise the operator."
+      },
+      {
+        "assertion": "promotion-notes.md addresses alert volume and deduplication (the 150-alerts-per-run cap, platform dedup, or aggregating to one row per device/destination)",
+        "reason": "Run C passes via 'platform dedup / one row per device-destination' without mentioning the 150-alerts-per-run cap at all; the cap is the operationally important fact and could be a separate assertion."
+      },
+      {
+        "reason": "No assertion checks for a self-inflicted 'Timestamp > ago(4h)' filter in detection.kql. Run C has exactly this (let LookbackWindow = 4h; where Timestamp > ago(LookbackWindow)), which drops late-arriving events that the ingestion_time()-based lookback would have included, yet it passes all 8 assertions. This is the single most discriminating XDR-specific mistake and should be asserted on (negative check)."
+      },
+      {
+        "reason": "No assertion checks that the hunt's 'Hours > 12' span condition was rescaled rather than copied. A run that kept 'Hours > 12' inside a 4 h lookback would be structurally unsatisfiable (never fires) but could still pass assertions 1-4 as written."
+      },
+      {
+        "reason": "No assertion checks that the prevalence (Devices <= N) count is computed over the unfiltered population rather than after process/allowlist exclusions. Run C computes rarity after excluding sensor processes, which can make a shared destination look rare; run B explicitly avoids this. The difference is uncaught."
+      }
+    ],
+    "overall": "All 8 assertions pass on genuine content, not surface matches; run A is the most complete (explicit 150 cap, 30-day first-run, MDE throttling, DedupFields, 24h/30d alternative). The assertion set, however, is permissive on 6-8 and has no negative check for a self-inflicted Timestamp filter."
+  }
+}

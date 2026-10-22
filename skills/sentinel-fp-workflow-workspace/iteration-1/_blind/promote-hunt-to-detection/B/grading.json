@@ -39,13 +39,33 @@
       "text": "promotion-notes.md includes a post-deployment check such as the first-run 30-day scan noise burst, an expected volume, or a scheduled review",
       "passed": true,
       "evidence": "Notes line 52: 'First run scans 30 days, not 4 h ... Expect a burst; if it approaches the 150 alerts/run cap it is silently truncating ... create the rule with a temporarily stricter MinConnections (e.g. 200) and relax it after the first run'; line 53 gives an expected volume ceiling (~50/run); line 58: 'Schedule the 7-day post-deploy review'."
+    },
+    {
+      "text": "detection.kql contains no Timestamp > ago() / Timestamp >= ago() filter on the recent rows (XDR evaluates the lookback on ingestion_time; such a filter drops late-arriving events)",
+      "passed": true,
+      "evidence": "programmatic: Timestamp > ago() filter ABSENT"
+    },
+    {
+      "text": "promotion-notes.md explicitly mentions the 150-alerts-per-run cap of XDR custom detections",
+      "passed": true,
+      "evidence": "programmatic: '150' found"
+    },
+    {
+      "text": "promotion-notes.md explicitly names MDE network telemetry sampling or throttling as a false-negative source (not only shared destinations)",
+      "passed": false,
+      "evidence": "programmatic: sampling/throttling term not found"
+    },
+    {
+      "text": "promotion-notes.md explicitly mentions the first-run 30-day scan (initial noise burst) or schedules a dated post-deploy review",
+      "passed": true,
+      "evidence": "programmatic: first-run/30-day term found"
     }
   ],
   "summary": {
-    "passed": 8,
-    "failed": 0,
-    "total": 8,
-    "pass_rate": 1.0
+    "passed": 11,
+    "failed": 1,
+    "total": 12,
+    "pass_rate": 0.917
   },
   "claims": [
     {

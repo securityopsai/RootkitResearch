@@ -39,12 +39,32 @@
       "text": "promotion-notes.md includes a post-deployment check such as the first-run 30-day scan noise burst, an expected volume, or a scheduled review",
       "passed": true,
       "evidence": "Notes line 78: 'First run burst. On save the platform scans 30 days, not 4 h ... the first run can hit the 150-alert cap. Treat that run as a baseline review'; line 98: '7-day post-deploy review: classify every alert TP / BTP / FP'; line 63: 'target far below 150 per run'."
+    },
+    {
+      "text": "detection.kql contains no Timestamp > ago() / Timestamp >= ago() filter on the recent rows (XDR evaluates the lookback on ingestion_time; such a filter drops late-arriving events)",
+      "passed": true,
+      "evidence": "programmatic: Timestamp > ago() filter ABSENT"
+    },
+    {
+      "text": "promotion-notes.md explicitly mentions the 150-alerts-per-run cap of XDR custom detections",
+      "passed": true,
+      "evidence": "programmatic: '150' found"
+    },
+    {
+      "text": "promotion-notes.md explicitly names MDE network telemetry sampling or throttling as a false-negative source (not only shared destinations)",
+      "passed": true,
+      "evidence": "programmatic: sampling/throttling term found"
+    },
+    {
+      "text": "promotion-notes.md explicitly mentions the first-run 30-day scan (initial noise burst) or schedules a dated post-deploy review",
+      "passed": true,
+      "evidence": "programmatic: first-run/30-day term found"
     }
   ],
   "summary": {
-    "passed": 8,
+    "passed": 12,
     "failed": 0,
-    "total": 8,
+    "total": 12,
     "pass_rate": 1.0
   },
   "claims": [
