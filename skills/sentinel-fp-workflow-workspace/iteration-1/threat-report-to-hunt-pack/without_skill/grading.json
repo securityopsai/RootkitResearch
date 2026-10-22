@@ -1,0 +1,122 @@
+{
+  "expectations": [
+    {
+      "text": "hunts.md separates indicator-based queries (domains, IP, hash) from behaviour-based queries and labels which is which",
+      "passed": true,
+      "evidence": "H01 is headed 'IOC sweep across all XDR device tables' with 'Detection potential: LOW / IOC-only'; the legend defines 'LOW / IOC-only — hunt now, then push to indicators'. Sub-queries are labelled '5a - exact IOC plus any file in that folder' vs '5b - generic', '6a - connections to IOC infrastructure' vs '6d - behavioural'; H02 is called 'the report's strongest behavioural signal'; the promotion matrix groups 'H01, H03, H05a, H05c, H06a-c, H07a-d, H08 | Hash / domains / IP / task name / path'. Separation is per query rather than by section, but every query is labelled."
+    },
+    {
+      "text": "No behaviour query matches the full sample command line verbatim or relies solely on sample-specific strings (the task name 'OneDrive Sync Health', 'upd.exe', the fictional hash) — behaviour queries anchor on the process (conhost/powershell/schtasks via FileName) and a few invariant tokens such as --headless, irm/iex, /create with an AppData\\Roaming path",
+      "passed": true,
+      "evidence": "H02: 'InitiatingProcessFileName =~ \"conhost.exe\" and InitiatingProcessCommandLine has \"--headless\"', 'FileName in~ (\"powershell.exe\", \"pwsh.exe\", ...)', HasCradle on irm/iwr/iex/downloadstring tokens. H04a: 'FileName =~ \"schtasks.exe\" and ProcessCommandLine has_any (\"/create\", \"/change\")' with '\\AppData\\Roaming\\' regex; the task name is an additive 'or ... has ioc_taskname', not the sole anchor. H05b/H09 are generic (script host writes PE into Roaming; chained signals). 'FileName =~ \"upd.exe\"' appears only in 5a/5c, which are labelled IOC/'covered by indicators'."
+    },
+    {
+      "text": "IOC values are declared once (let dynamic list or externaldata) and bound to appropriate columns and operators: domains with has_any on RemoteUrl/Url-type columns, the IP with in/== on RemoteIP",
+      "passed": false,
+      "evidence": "Override of auto-grade (which only checked that lets exist). The shared block declares 'let ioc_domains = dynamic([...]); let ioc_ips = dynamic([\"203.0.113.45\"]);' and H06a binds them correctly ('RemoteIP in (ioc_ips) or RemoteUrl has_any (ioc_domains)'), but the same values are re-typed as literals in three queries: 6b line 366 'Answers has \"203.0.113.45\"' (ioc_ips not declared in that block), 7b lines 436/447/448/455 '_Im_WebSession(... url_has_any=dynamic([\"cdn-updates-check.com\", \"telemetry-sync-cloud.net\"]))', '_Im_Dns(... response_has_any_prefix=dynamic([\"203.0.113.45\"]))', and 7c line 465 'Name has_any (\"cdn-updates-check.com\", \"telemetry-sync-cloud.net\") or IPAddresses has \"203.0.113.45\"'. The pack's own rotation advice ('replace the let ioc_* = dynamic([...]) lines with _GetWatchlist') would therefore miss three queries. 'Declared once' is not met."
+    },
+    {
+      "text": "hunts.md includes a query over the vendor's own alerts (AlertInfo/AlertEvidence or SecurityAlert) for this campaign",
+      "passed": true,
+      "evidence": "H01 second block: 'AlertEvidence | where ... SHA256 in (ioc_sha256) or RemoteIP in (ioc_ips) or RemoteUrl has_any (ioc_domains) or FolderPath has @\"\\AppData\\Roaming\\msbuild\\\" | join kind=inner (AlertInfo | project AlertId, Title, Severity, Category, DetectionSource) on AlertId' under 'Also check whether Defender already alerted on any of it'."
+    },
+    {
+      "text": "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
+      "passed": false,
+      "evidence": "MITRE lines exist for H01 (T1105, T1053.005, T1071.001), H02 (T1204.004, T1059.001, T1105, T1564.003), H04 (T1053.005, T1036.004), H05 (T1105, T1036.005), H06 and H07 (T1071.001, T1041). But H03 ('Any download cradle hitting the reported infrastructure'), H08 (delivery/URL clicks), H09 ('Chained signals per device' — the pack's self-declared best rule candidate) and H10 (credential-store copies, risky sign-ins) have Hypothesis/Tables lines and no MITRE mapping at all. Four of ten hunts, including behaviour hunts, carry no mapping."
+    },
+    {
+      "text": "hunts.md states for each query (or group) whether it is a detection candidate or hunt-only, with a reason tied to expected noise or precision",
+      "passed": true,
+      "evidence": "Every hunt ends with a 'Detection potential' line with a reason: H01 'LOW / IOC-only ... do not build a KQL rule around values that will rotate'; H02 'HIGH ... FPs there are rare'; H04 'MEDIUM -> HIGH after baseline'; H05 '5a LOW / IOC-only; 5b MEDIUM (good as a scheduled custom detection with GlobalPrevalence < 10 and a signer allow-list)'; H06 '6d MEDIUM: viable ... once an allow-list of signed/high-prevalence paths exists'; H09 'HIGH ... best rule candidate'. Section 11 matrix repeats this with 'Tuning needed before go-live'."
+    },
+    {
+      "text": "hunts.md recommends validating the behaviour queries against the report's sample command lines (lab/test fixture) or explicitly marks queries as untested",
+      "passed": true,
+      "evidence": "Top of file: 'they have not been executed against a tenant, so expect to adjust a column name or two on first run'; section 13: 'No tenant access was available while writing this pack, so no query has been executed'. No fixture built from the sample command lines is provided, but the explicit 'untested' marking satisfies the assertion's second clause."
+    },
+    {
+      "text": "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)",
+      "passed": true,
+      "evidence": "Override of auto-grade. It flagged one unbounded block, the 'Shared IOC block' at line 24, which contains only let statements (no table reference) and is not a query; it also carries 'let lookback = 30d;'. Every real query is bounded: 'Timestamp > ago(lookback)' (H01-H06, H08-H10a), 'TimeGenerated > ago(90d)' (H04c, H07a, 7c, 7d), '_Im_*(starttime=ago(90d), endtime=now())' (7b), 'ago(14d)' (H10b), 'ago(30d)' (baseline). Verified by independent fence extraction: 27/27 table-bearing blocks bounded."
+    },
+    {
+      "text": "Every join in every query states an explicit kind= (no bare join) and every make_set/make_list is capped — check by running: python3 -I /home/user/RootkitResearch/skills/sentinel-fp-workflow/scripts/kql_lint.py --hunt <run>/hunts.md and reporting any E001 or W005 lines (quote the summary line as evidence; other codes do not count for this assertion)",
+      "passed": false,
+      "evidence": "kql_lint.py --hunt B/hunts.md summary line: '-- 0 error(s), 9 warning(s)'. W005 lines: 'hunts.md#L342[H06 ...]:350: W005 warn: unbounded make_set()' (H06a 'Actions = make_set(ActionType), Ports = make_set(RemotePort)') and 'hunts.md#L529[H09 ...]:559: W005 warn: unbounded make_set()' (H09 'Signals = make_set(Signal)'). No E001 (both joins are 'join kind=inner'). Two uncapped make_set calls fail the assertion; the other seven warnings (W006, W014) do not count."
+    },
+    {
+      "text": "At least one behaviour query that is proposed as a detection candidate already carries the XDR required columns (Timestamp, ReportId, DeviceId) in its output or the promotion notes state they must be added",
+      "passed": true,
+      "evidence": "H02 first query (matrix: 'XDR custom detection ... Yes, first') projects 'Timestamp, DeviceName, AccountName, FromRunDialog, ..., DeviceId, ReportId'. Section 11 notes: 'XDR custom detections on device tables must project Timestamp, DeviceId, ReportId; the queries above already carry them (drop the summarize steps or re-add those columns after aggregation).' (H09's summarize output lacks Timestamp/ReportId; the note covers it.)"
+    },
+    {
+      "text": "hunts.md names at least one tenant precondition that would make an empty result untrustworthy (e.g. the DnsQueryResponse/HttpConnectionInspected inspection events, ScheduledTaskCreated ActionType availability, RunMRU registry coverage, SecurityEvent 4698 auditing, MDE network sampling)",
+      "passed": true,
+      "evidence": "Section 13: 'DnsConnectionInspected / HttpConnectionInspected events and their AdditionalFields keys depend on MDE network-inspection being active'; 'RunMRU registry collection by MDE is not guaranteed'; 'Sentinel 4698 coverage requires the \"Other Object Access Events\" audit subcategory'; H02 note: 'if it never returns rows even for ordinary Run usage on a test box, the key is not collected'. Also 'The User-Agent and /api/upload hunts assume TLS inspection at the proxy'."
+    }
+  ],
+  "summary": {
+    "passed": 8,
+    "failed": 3,
+    "total": 11,
+    "pass_rate": 0.73
+  },
+  "claims": [
+    {
+      "claim": "KQL blocks are plausibly valid Advanced Hunting KQL",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Lint: 0 errors. Real columns throughout (FileOriginUrl/FileOriginIP, RemoteIPType, UrlClickEvents.IsClickedThrough, EmailUrlInfo.UrlDomain, ThreatIntelligenceIndicator fields); FileProfile() invoked after a summarize with the documented 1000 cap; union-of-lets in H01 is well formed. 'has \"--headless\"' and regex extracts with doubled quotes inside @\"...\" strings are syntactically fine."
+    },
+    {
+      "claim": "Pack is usable today: clear run order, no placeholders left unfilled",
+      "type": "quality",
+      "verified": false,
+      "evidence": "Run order is explicit (section 0, H01→H02→H04/H05→H06/H07→H09→H10). But H10b ships 'let affected_users = dynamic([\"user1@contoso.com\", \"user2@contoso.com\"])' and 'Location !in (\"GB\", \"DE\", \"FR\", \"NL\") // adjust to your countries' (lint W014); it is labelled 'replace the list with H09 output' but is an unfilled placeholder. Every other query is self-contained with its own let lines."
+    },
+    {
+      "claim": "'XDR custom detections ... the queries above already carry them [Timestamp, DeviceId, ReportId]'",
+      "type": "factual",
+      "verified": false,
+      "evidence": "True for H02 and H04/H05 single-event queries; false for H09 (the self-declared best rule candidate), whose output is 'summarize ... by DeviceId, DeviceName, bin(T, window)' with no Timestamp or ReportId, and for H06d/H05b (FileProfile-enriched aggregates). The parenthetical 'drop the summarize steps or re-add those columns' is the only mitigation."
+    },
+    {
+      "claim": "'The report's hash is explicitly fictional/placeholder and will differ per build'",
+      "type": "factual",
+      "verified": false,
+      "evidence": "Partially right but misses the real defect: the value is 65 hex characters, not a valid SHA256 length, so the H01/H05a/H07d hash clauses can never match regardless of build. Not noticed."
+    },
+    {
+      "claim": "'There is no ASR rule that blocks conhost.exe --headless -> powershell.exe directly'",
+      "type": "factual",
+      "verified": true,
+      "evidence": "Consistent with the published ASR rule set (no parent/child conhost rule exists); cannot be re-verified from outputs alone."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "IOC values are declared once (let dynamic list or externaldata) and bound to appropriate columns and operators: domains with has_any on RemoteUrl/Url-type columns, the IP with in/== on RemoteIP",
+        "reason": "The pre-grade passes on 'IOC lets: True' as soon as any let dynamic exists. Run B declares the lets and then re-types the domains/IP as inline literals in 6b, 7b, 7c (lines 366, 436, 447-448, 455, 465), so a rotation would miss three queries. Check that each IOC literal appears only inside a let declaration (or watchlist/externaldata), not scattered through queries."
+      },
+      {
+        "assertion": "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)",
+        "reason": "The machine pre-grade treats every ```kql fence as a query, so a let-only IOC block (B, C) counts as 'unbounded', and its fence tracking breaks on the ```yaml block in C (it reported a block starting '--- ## 4.'). More importantly the assertion has no stated position on XDR custom-detection drafts, which legitimately omit a Timestamp filter because the platform owns the lookback: A satisfied it with ingestion_time() > ago(4h), C omitted the bound and explained why. State whether a detection draft must still carry ago()/ingestion_time() or is exempt."
+      },
+      {
+        "assertion": "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
+        "reason": "'Each query' cannot be met literally by a vendor-alert sweep (AlertEvidence/SecurityAlert) or a preflight/coverage query; A and C mark those with a dash and a reason. Clarify that hunt queries over raw telemetry need a mapping and alert/preflight queries are exempt, otherwise graders will split on it."
+      },
+      {
+        "reason": "The report's SHA256 is 65 hex characters (verified with wc -c), so any hash sweep built from it can never match. Only run C noticed; A and B shipped hash clauses and A even annotated it 'MDE stores hashes lower-case'. If the malformed hash is deliberate, add an assertion for noticing it; if accidental, fix the fixture, because it silently invalidates the hash IOC in every pack."
+      }
+    ],
+    "overall": "Run B fails 3/11: inline IOC literals outside the let block, four hunts with no MITRE mapping, and two uncapped make_set calls caught by the linter. The machine pre-grades for 3 and 8 were both wrong in opposite directions and had to be overridden."
+  }
+}

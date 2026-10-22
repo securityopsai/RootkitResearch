@@ -1,0 +1,118 @@
+{
+  "expectations": [
+    {
+      "text": "hunts.md separates indicator-based queries (domains, IP, hash) from behaviour-based queries and labels which is which",
+      "passed": true,
+      "evidence": "Run-order table splits step 2 'Pure IOC matches; near-zero noise' (H3a, H4b, H6) from step 3 'Behavioural; catches variants the IOCs miss' (H1a, H2b, H4a). Hunt index 'Detection candidate' column marks 'No — IOC only' for H4b/H6 and 'No — push IOCs to Defender Indicators + Sentinel TI instead' for H3a; section 4: 'IOC-only hunts (H3a, H4b, H5, H6) fail gate 1 for a rule (they are indicators, not behaviour)'."
+    },
+    {
+      "text": "No behaviour query matches the full sample command line verbatim or relies solely on sample-specific strings (the task name 'OneDrive Sync Health', 'upd.exe', the fictional hash) — behaviour queries anchor on the process (conhost/powershell/schtasks via FileName) and a few invariant tokens such as --headless, irm/iex, /create with an AppData\\Roaming path",
+      "passed": true,
+      "evidence": "H1a: 'InitiatingProcessFileName =~ \"conhost.exe\"', 'InitiatingProcessCommandLine has \"headless\"', 'FileName in~ (shells)', 'HasCradle = Canon has_any (cradle_terms)' (irm/iwr/iex/...). H2a: 'FileName =~ \"schtasks.exe\"', parse_command_line, 'CreateIdx >= 0 and TrIdx >= 0', 'TaskAction contains @\"\\appdata\\roaming\\\"'; task name only feeds flags (IocTaskName, MasqueradeName). H2b keys on TaskContent containing '\\AppData\\Roaming\\' with the task name as an additive 'or'. H4a: dropper process list + Roaming + PE extension. 'upd.exe' appears in behaviour queries only as the 'MsbuildMasquerade' flag in H3b."
+    },
+    {
+      "text": "IOC values are declared once (let dynamic list or externaldata) and bound to appropriate columns and operators: domains with has_any on RemoteUrl/Url-type columns, the IP with in/== on RemoteIP",
+      "passed": true,
+      "evidence": "Hoisted IOC block declares once: 'let ioc_domains = dynamic([\"cdn-updates-check.com\", \"telemetry-sync-cloud.net\"]); let ioc_ips = dynamic([\"203.0.113.45\"]); let ioc_sha256 = ...'. Bound as 'RemoteIP in (ioc_ips) or RemoteUrl has_any (ioc_domains)' (H3a, H5), 'Url has_any (ioc_domains)' (H6, H3c), 'DstIpAddr in (ioc_ips)' / 'DestinationIP in (ioc_ips)' (H3c). The two Sentinel-only blocks redeclare the same lets so they stand alone; no domain/IP/hash literal appears outside a let. Watchlist alternative is described."
+    },
+    {
+      "text": "hunts.md includes a query over the vendor's own alerts (AlertInfo/AlertEvidence or SecurityAlert) for this campaign",
+      "passed": true,
+      "evidence": "H5 'Did Defender already alert on any of this?': 'AlertEvidence | where Timestamp > ago(lookback) | where SHA256 in (ioc_sha256) or RemoteIP in (ioc_ips) or RemoteUrl has_any (ioc_domains) or (FolderPath has \"msbuild\" ...) or (ProcessCommandLine has \"headless\" and ProcessCommandLine has \"conhost\") ...' projecting AlertId, Title, Severity, Category, DetectionSource."
+    },
+    {
+      "text": "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
+      "passed": true,
+      "evidence": "Hunt index MITRE column per hunt: H1a 'T1204.004, T1059.001, T1105, T1564.003', H1b 'T1204.004, T1059.001', H1c T1204.004, H2a 'T1053.005, T1036.005', H2b/H2c T1053.005, H3a T1071.001, H3b 'T1071.001, T1041', H3c T1041, H4a T1105, H4b 'T1105, T1036.005', H6 T1204.004; H5 (alert sweep) '—'. The detection-ready H1a draft inherits H1a's mapping and the YAML template repeats 'relevantTechniques: [T1204.004, T1059.001, T1105]'."
+    },
+    {
+      "text": "hunts.md states for each query (or group) whether it is a detection candidate or hunt-only, with a reason tied to expected noise or precision",
+      "passed": true,
+      "evidence": "Hunt index 'Detection candidate' column for every hunt plus section 4 table with verdict and blocker: 'H1a | Promote | ... every HasCradle == true row must be explained'; 'H2b | Promote after baseline | ... roaming_allowlist populated'; 'H1b | Hunt first, promote if quiet | Expect admin one-liner noise'; 'H3b (narrow) | Later | ... expect first-run noise burst'; 'H1c | No | Coverage unverified'; 'H3a, H4b, H5, H6 | No rule | Defender Indicators + Sentinel TI'. Each hunt also has 'Expected volume' and 'Benign lookalikes' text."
+    },
+    {
+      "text": "hunts.md recommends validating the behaviour queries against the report's sample command lines (lab/test fixture) or explicitly marks queries as untested",
+      "passed": true,
+      "evidence": "Status line: 'queries are written, reviewed against the KQL quality checklist, and are NOT yet executed (no tenant access from the authoring session)'. Promotion checklist step 3: 'Unit fixtures under tests/fixtures/<rule-id>/: tp.json (the exact PASTEJACK chain from the report), tn_*.json (...), empty.json. Build the test queries with scripts/kql_test_harness.py'. H1c: 'Validate once by typing a harmless command in Run on a test device'."
+    },
+    {
+      "text": "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)",
+      "passed": false,
+      "evidence": "Auto-grade flagged 2 unbounded blocks; partially upheld. The hoisted IOC block (line 28) is let-only and not a query (override), and the pre-grader's fence tracking broke on the ```yaml block. But the 'Detection-ready form of H1a' (line 554 onward) is a real DeviceProcessEvents query with no ago()/between/ingestion_time() bound at all; the text states it deliberately: 'no self-inflicted Timestamp filter (the service pre-filters to the lookback)'. The assertion says every KQL query; run A shows the same draft can carry 'ingestion_time() > ago(4h)'. All 15 hunt queries are bounded via 'Timestamp > ago(lookback)' / 'TimeGenerated > ago(lookback)' / '_Im_WebSession(starttime = ago(lookback) ...)'."
+    },
+    {
+      "text": "Every join in every query states an explicit kind= (no bare join) and every make_set/make_list is capped — check by running: python3 -I /home/user/RootkitResearch/skills/sentinel-fp-workflow/scripts/kql_lint.py --hunt <run>/hunts.md and reporting any E001 or W005 lines (quote the summary line as evidence; other codes do not count for this assertion)",
+      "passed": true,
+      "evidence": "kql_lint.py --hunt C/hunts.md summary line: '-- 0 error(s), 1 warning(s)'. The single warning is W015 (H2c has_any on full strings), which does not count. No E001 or W005. The one join (H3b) is 'join kind=leftouter ... on $left.InitiatingProcessSHA1 == $right.SHA1'; all make_set calls are capped (e.g. 'make_set(RemoteUrl, 15)', 'make_set(ProcessCommandLine, 5)')."
+    },
+    {
+      "text": "At least one behaviour query that is proposed as a detection candidate already carries the XDR required columns (Timestamp, ReportId, DeviceId) in its output or the promotion notes state they must be added",
+      "passed": true,
+      "evidence": "H1a (index: 'Yes — XDR NRT or 1h') projects 'Timestamp, DeviceId, DeviceName, AccountName, ..., ReportId'. The detection-ready form recovers them after aggregation: 'summarize (Timestamp, ReportId) = arg_max(Timestamp, ReportId) ... by DeviceId, DeviceName, AccountSid, AccountName' and the text states 'Timestamp, ReportId, DeviceId, DeviceName recovered after summarize'."
+    },
+    {
+      "text": "hunts.md names at least one tenant precondition that would make an empty result untrustworthy (e.g. the DnsQueryResponse/HttpConnectionInspected inspection events, ScheduledTaskCreated ActionType availability, RunMRU registry coverage, SecurityEvent 4698 auditing, MDE network sampling)",
+      "passed": true,
+      "evidence": "Section 5 'Things to verify in the tenant before trusting a \"no results\"': 'DnsConnectionInspected requires the network-protection DNS inspection feature; if absent, H3a DNS leg is silent'; 'DeviceEvents ScheduledTaskCreated requires a current MDE sensor; if H2b returns nothing but H2a shows task creations, the ActionType is not populated'; 'Sentinel H2c needs the \"Other Object Access Events\" audit subcategory'; H1c: 'RunMRU is not guaranteed to be collected ... treat it as \"not collected\", not \"absent\"'."
+    }
+  ],
+  "summary": {
+    "passed": 10,
+    "failed": 1,
+    "total": 11,
+    "pass_rate": 0.91
+  },
+  "claims": [
+    {
+      "claim": "'the hash as published is 65 hex chars, which is not a valid SHA256'",
+      "type": "factual",
+      "verified": true,
+      "evidence": "wc -c on the report value returns 65. C is the only run that noticed; it keeps the sweep ready 'once corrected' and repeats the warning in section 5."
+    },
+    {
+      "claim": "KQL blocks are plausibly valid Advanced Hunting KQL",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Lint: 0 errors. Real columns including ProcessUniqueId/InitiatingProcessUniqueId, DeviceFileCertificateInfo.SHA1/IsSigned/Signer/IsTrusted, UrlClickEvents.ReportId, SecurityEvent.TaskName/TaskContent; parse_path(FileName).Extension and set_intersect() are valid. H3b join bookkeeping is right ('project-away SHA1, Timestamp1'). Fences are balanced."
+    },
+    {
+      "claim": "Pack is usable today: clear run order, no placeholders left unfilled",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Five-step run-order table. Thirteen of fifteen queries begin '// IOC block above' and only run once the hoisted block is pasted above them (documented, one extra step). The only placeholders ('<new GUID>', '<H1a query>') are in the YAML repo template, not in a query. 'If the tenant rejects an empty list, delete the clause' is pre-empted for the allowlist."
+    },
+    {
+      "claim": "'Watchlists/externaldata() are not available in XDR Continuous (NRT) rules'",
+      "type": "factual",
+      "verified": true,
+      "evidence": "Consistent with the documented NRT restrictions (single table, no externaldata); cannot be re-verified from outputs."
+    },
+    {
+      "claim": "The detection-ready H1a draft meets the XDR custom-detection contract",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Single table, no join/union, Timestamp/ReportId/DeviceId recovered by arg_max, one entity column per type (DeviceId, AccountSid). Only gap: no explicit time bound (see assertion 8)."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)",
+        "reason": "The machine pre-grade treats every ```kql fence as a query, so a let-only IOC block (B, C) counts as 'unbounded', and its fence tracking breaks on the ```yaml block in C (it reported a block starting '--- ## 4.'). More importantly the assertion has no stated position on XDR custom-detection drafts, which legitimately omit a Timestamp filter because the platform owns the lookback: A satisfied it with ingestion_time() > ago(4h), C omitted the bound and explained why. State whether a detection draft must still carry ago()/ingestion_time() or is exempt."
+      },
+      {
+        "reason": "The report's SHA256 is 65 hex characters (verified with wc -c), so any hash sweep built from it can never match. Only run C noticed; A and B shipped hash clauses and A even annotated it 'MDE stores hashes lower-case'. If the malformed hash is deliberate, add an assertion for noticing it; if accidental, fix the fixture, because it silently invalidates the hash IOC in every pack."
+      },
+      {
+        "assertion": "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
+        "reason": "'Each query' cannot be met literally by a vendor-alert sweep (AlertEvidence/SecurityAlert) or a preflight/coverage query; A and C mark those with a dash and a reason. Clarify that hunt queries over raw telemetry need a mapping and alert/preflight queries are exempt, otherwise graders will split on it."
+      }
+    ],
+    "overall": "Run C fails only assertion 8, and only on the detection-ready draft that intentionally omits a Timestamp filter; whether that should fail depends on a rule the assertion does not state. It is also the only run that caught the malformed hash."
+  }
+}

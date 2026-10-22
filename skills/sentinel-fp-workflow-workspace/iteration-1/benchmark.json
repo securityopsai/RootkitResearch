@@ -1,0 +1,1135 @@
+{
+  "metadata": {
+    "skill_name": "sentinel-fp-workflow",
+    "skill_path": "/home/user/RootkitResearch/skills/sentinel-fp-workflow",
+    "executor_model": "<model-name>",
+    "analyzer_model": "<model-name>",
+    "timestamp": "2026-10-22T18:51:36Z",
+    "evals_run": [
+      "promote-hunt-to-detection",
+      "review-and-fix-flawed-query",
+      "sentinel-password-spray-rule",
+      "threat-report-to-hunt-pack",
+      "xdr-first-seen-lsass-access"
+    ],
+    "runs_per_configuration": 1
+  },
+  "runs": [
+    {
+      "eval_id": "promote-hunt-to-detection",
+      "eval_name": "promote-hunt-to-detection",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 12,
+        "failed": 0,
+        "total": 12,
+        "time_seconds": 381.0,
+        "tokens": 153521,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "detection.kql replaces the sort by Connections desc ranking with explicit threshold conditions on named let tunables",
+          "passed": true,
+          "evidence": "No 'sort by'/'order by' anywhere in A/detection.kql. Lines 32-37 hoist let MaxDevices=3, MinConnections=16, MinActiveBins=6, MinSpanMinutes=180; lines 70-72 apply them: '| where Connections >= MinConnections and ActiveBins >= MinActiveBins and SpanMinutes >= MinSpanMinutes'."
+        },
+        {
+          "text": "detection.kql keeps a population/prevalence filter (Devices <= N or equivalent) together with a minimum connection count, rather than ranking alone",
+          "passed": true,
+          "evidence": "Lines 63-65: 'let RareDestinations = Pairs | summarize Devices = dcount(DeviceId) by RemoteIP | where Devices <= MaxDevices;' then line 68 '| lookup kind=inner RareDestinations on RemoteIP' combined with line 70 'Connections >= MinConnections' (MinConnections = 16)."
+        },
+        {
+          "text": "detection.kql returns Timestamp, ReportId and DeviceId (aggregation per device or arg_max/arg_min recovery), not only per-RemoteIP rows",
+          "passed": true,
+          "evidence": "Lines 51-60: summarize ... '(Timestamp, ReportId, DeviceName, InitiatingProcessFileName, InitiatingProcessSHA256) = arg_max(Timestamp, ReportId, ...)' ... 'by DeviceId, RemoteIP'. Final project-reorder (lines 74-75) carries Timestamp, DeviceId, DeviceName, ReportId. One row per DeviceId+RemoteIP, not per RemoteIP only."
+        },
+        {
+          "text": "Every make_set / make_list call in detection.kql includes a size cap argument",
+          "passed": true,
+          "evidence": "Only two calls: line 58 'make_set(InitiatingProcessFileName, 10)' and line 59 'make_set(RemotePort, 10)'. No make_list. Both capped."
+        },
+        {
+          "text": "promotion-notes.md states that an hourly XDR custom detection has a fixed lookback (4 hours) so the hunt's 7-day window cannot be kept as-is, and proposes a concrete resolution (shorter window, a 24h/30d schedule, or a persisted baseline)",
+          "passed": true,
+          "evidence": "Notes line 5: 'frequency Every hour (fixed platform lookback 4 h)'; lines 17-21: 'An hourly rule therefore never sees more than 4 h of data ... The hunt's Hours > 12 is structurally unsatisfiable inside a 4 h window, so the criterion was rescaled rather than copied' (6 of 8 bins, span >= 3 h). Also proposes alternatives, lines 26-27: 'The Sentinel variant (14 d period) or an XDR Every 24 hours / 30 d variant is where the original 7 d / 12 h criterion survives'."
+        },
+        {
+          "text": "promotion-notes.md addresses alert volume and deduplication (the 150-alerts-per-run cap, platform dedup, or aggregating to one row per device/destination)",
+          "passed": true,
+          "evidence": "Notes line 80: 'the first run can hit the 150-alert cap'; line 88: 'Volume per run vs 150. Sustained counts anywhere near 150 mean the rule is silently dropping detections'; line 46: 'DedupFields: DeviceId, RemoteIP ... Platform dedups identical entity + custom-detail rows within a run and across the 4 h / 1 h overlap'; line 37: one row per DeviceId + RemoteIP."
+        },
+        {
+          "text": "promotion-notes.md names MDE network telemetry sampling/throttling or shared destinations (CDNs, Windows Update, telemetry endpoints) as a source of false negatives/positives",
+          "passed": true,
+          "evidence": "Notes lines 89-90: 'sustained zero for more than a week means the throttled network telemetry or an exclusion has swallowed it'; line 96: 'MDE network throttling (false negatives)'; line 40: 'or shared SaaS/CDN endpoints alert'; lines 91-92 list update agents, telemetry clients as BTP classes. detection.kql header line 14-15 also states 'Network telemetry is THROTTLED by the sensor (sampled: yes)'."
+        },
+        {
+          "text": "promotion-notes.md includes a post-deployment check such as the first-run 30-day scan noise burst, an expected volume, or a scheduled review",
+          "passed": true,
+          "evidence": "Notes line 78: 'First run burst. On save the platform scans 30 days, not 4 h ... the first run can hit the 150-alert cap. Treat that run as a baseline review'; line 98: '7-day post-deploy review: classify every alert TP / BTP / FP'; line 63: 'target far below 150 per run'."
+        },
+        {
+          "text": "detection.kql contains no Timestamp > ago() / Timestamp >= ago() filter on the recent rows (XDR evaluates the lookback on ingestion_time; such a filter drops late-arriving events)",
+          "passed": true,
+          "evidence": "programmatic: Timestamp > ago() filter ABSENT"
+        },
+        {
+          "text": "promotion-notes.md explicitly mentions the 150-alerts-per-run cap of XDR custom detections",
+          "passed": true,
+          "evidence": "programmatic: '150' found"
+        },
+        {
+          "text": "promotion-notes.md explicitly names MDE network telemetry sampling or throttling as a false-negative source (not only shared destinations)",
+          "passed": true,
+          "evidence": "programmatic: sampling/throttling term found"
+        },
+        {
+          "text": "promotion-notes.md explicitly mentions the first-run 30-day scan (initial noise burst) or schedules a dated post-deploy review",
+          "passed": true,
+          "evidence": "programmatic: first-run/30-day term found"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "review-and-fix-flawed-query",
+      "eval_name": "review-and-fix-flawed-query",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 8,
+        "failed": 0,
+        "total": 8,
+        "time_seconds": 248.2,
+        "tokens": 118481,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "review.md identifies the join without kind= (default innerunique dedup) as a problem",
+          "passed": true,
+          "evidence": "review.md #21: \"L10 bare `join` (no `kind=`) \u2014 default `innerunique` dedups the left side by `DeviceId`, silently keeping one process event per device (lint E001...)\""
+        },
+        {
+          "text": "review.md identifies that TimeGenerated is the wrong time column for a Defender XDR (Advanced Hunting) query and/or that the Timestamp/TimeGenerated > ago(1h) filter on the recent window is wrong for an hourly custom detection",
+          "passed": true,
+          "evidence": "review.md #1: \"L7 `TimeGenerated` in an XDR query \u2014 Advanced Hunting device tables use `Timestamp`...\"; #6: \"L7 `> ago(1h)` on the recent window \u2014 the service already evaluates the lookback on `ingestion_time()`; a self-inflicted event-time filter drops exactly the late-arriving events...\"; #7 zero-overlap schedule. Both halves identified."
+        },
+        {
+          "text": "review.md identifies the full command-line string literals as brittle (argument order/quoting) and/or the 2\u20133 character has_any terms as unindexed/noisy",
+          "passed": true,
+          "evidence": "review.md #9: \"`Commands` holds full command-line strings consumed by `has_any` \u2014 a multi-word phrase matches terms in that exact order, so argument reorder, `/for=C:` inserted, `/quiet` omitted, or quoting evades every entry\"; #17: \"`has_any (\"-e\", \"-enc\", \"del\")` \u2014 all three terms are <= 3 characters: not term-indexed (full table scan) and `del` / `-e` match an enormous share of all process events\". Both halves identified."
+        },
+        {
+          "text": "review.md identifies the case-sensitive FileName == comparisons",
+          "passed": true,
+          "evidence": "review.md #11: \"L8 `FileName == \"vssadmin.exe\"` (case-sensitive) \u2014 MDE preserves on-disk casing and attackers vary it; file names need `=~` / `in~`\""
+        },
+        {
+          "text": "review.md identifies the positional index parse_json(AdditionalFields)[1].value as brittle",
+          "passed": true,
+          "evidence": "review.md #24: \"L11 `parse_json(AdditionalFields)[1].value` positional indexing \u2014 `AdditionalFields` is a property bag, not an array; `[1]` returns null silently\""
+        },
+        {
+          "text": "review.md identifies that summarizing by DeviceName drops DeviceId and/or that the required Timestamp and ReportId columns are missing from the output",
+          "passed": true,
+          "evidence": "review.md #3: \"L12 output has no `Timestamp` / `ReportId` \u2014 every XDR custom detection must return them\"; #4: \"L12 output has no `DeviceId` \u2014 required impacted-asset column ... dropped by grouping on `DeviceName` only\"; #27 reiterates DeviceName grouping losing DeviceId. Both halves identified."
+        },
+        {
+          "text": "fixed.kql projects Timestamp, ReportId and DeviceId, every join states kind=, and every make_set/make_list is capped",
+          "passed": true,
+          "evidence": "Verified by reading fixed.kql (auto-grade agrees): `| project Timestamp, ReportId, DeviceId, ...` then `summarize (Timestamp, ReportId) = arg_min(Timestamp, ReportId) ... by DeviceId, DeviceName, InitiatingProcessAccountSid` and `project-reorder Timestamp, DeviceName, DeviceId, ... ReportId` keep all three. No `join` anywhere (0 joins, so kind= clause vacuous). Three make_set calls, all capped: `make_set(Tool, MaxContextItems)`, `make_set(ProcessCommandLine, MaxContextItems)`, `make_set(InitiatingProcessFileName, MaxContextItems)` with `let MaxContextItems = 20`. No make_list."
+        },
+        {
+          "text": "fixed.kql produces 0 errors and 0 warnings from the skill's scripts/kql_lint.py --platform xdr (programmatic check)",
+          "passed": true,
+          "evidence": "Ran `python3 -I .../kql_lint.py --platform xdr A/fixed.kql`; final summary line: \"-- 0 error(s), 0 warning(s)\" (no findings at all). Matches auto-grade."
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "sentinel-password-spray-rule",
+      "eval_name": "sentinel-password-spray-rule",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 9,
+        "failed": 0,
+        "total": 9,
+        "time_seconds": 458.6,
+        "tokens": 172292,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "rule.yaml has queryPeriod strictly longer than queryFrequency (no zero-overlap 1h/1h window) or the query selects the run window on ingestion_time()",
+          "passed": true,
+          "evidence": "queryFrequency: 1h (line 18), queryPeriod: 2h (line 19); 2h > 1h. Additionally the run window is selected on ingestion time: line 75 '| where coalesce(ingestion_time(), TimeGenerated) > now() - query_frequency'."
+        },
+        {
+          "text": "The query handles ingestion delay explicitly: it uses ingestion_time() or declares a delay/wait window (e.g. let query_wait / ingestion_delay) that is added to the scan window",
+          "passed": true,
+          "evidence": "Line 36 'let ingestion_delay = 1h;' with lines 34-35 documenting 'Scan window on event time = query_frequency + ingestion_delay' (query_period = 2h). Line 74 '| where TimeGenerated >= now() - query_period' is the wide event-time scan and line 75 '| where coalesce(ingestion_time(), TimeGenerated) > now() - query_frequency' is the exact run slice - this is the documented Microsoft pattern (wider TimeGenerated scan + ingestion_time() > ago(frequency)). Note query_period is a literal 2h, not computed from query_frequency + ingestion_delay, but the comment makes the relationship explicit."
+        },
+        {
+          "text": "Result codes are declared in let lists (not scattered inline) and the logic distinguishes MFA/Conditional-Access interrupt codes (e.g. 50074, 50076, 53003, 50158) as credential-valid from true credential failures (50126, 50053)",
+          "passed": true,
+          "evidence": "Lines 44-46 'let CredInvalid = dynamic([\"50126\", \"50053\", \"50034\"])' and lines 48-61 'let CredValid = dynamic([\"0\", \"50074\", \"50076\", \"50072\", \"50158\", \"53000\", \"53001\", \"53003\", ... \"50055\"])' with a per-code comment. Logic distinguishes them: line 87 'Failures = countif(ResultType in (CredInvalid))', line 88 'CredValidated = countif(ResultType in (CredValid))'; CredValidated accounts are surfaced separately (lines 97-98) and raise severity to High (line 119). All four example interrupt codes (50074, 50076, 53003, 50158) are classified as credential-valid."
+        },
+        {
+          "text": "The query aggregates by source IPAddress with a distinct count of user principals (dcount) and the threshold(s) are declared in let statements",
+          "passed": true,
+          "evidence": "Line 93 'SprayedAccounts = dcountif(UserPrincipalName, Failures between (1 .. max_failures_per_account))' and line 94 'DistinctFailedAccounts = dcountif(UserPrincipalName, Failures > 0)' in a summarize 'by IPAddress' (line 102). Thresholds in let statements: 'let min_distinct_accounts = 10;' (line 39) applied at line 103, 'let max_failures_per_account = 3;' (line 40)."
+        },
+        {
+          "text": "entityMappings contains an IP entity whose columnName appears, with identical casing, in the final projection of the query",
+          "passed": true,
+          "evidence": "entityMappings IP/Address columnName: IPAddress (lines 130-133). The final operator is '| project-reorder IPAddress, Severity, ...' (line 126), which keeps every column; IPAddress is the join key from Candidates and the right-side duplicate IPAddress1 is removed at line 118, so the output contains exactly one 'IPAddress' column with matching case."
+        },
+        {
+          "text": "Every make_set / make_list call in the query includes a size cap argument",
+          "passed": true,
+          "evidence": "7 make_set/make_set_if calls in non-comment code, all capped: make_set_if(UserPrincipalName, CredValidated > 0, 100), make_set_if(UserPrincipalName, Failures > 0, 25) (lines 98-99), make_set(AppDisplayName,20), make_set(ClientAppUsed,10), make_set(UserAgent,10), make_set(Location,10), make_set(ResultType,20) (lines 110-114). Zero uncapped. An uncapped make_list appears only inside a commented-out watchlist example (line 67)."
+        },
+        {
+          "text": "tactics includes CredentialAccess and relevantTechniques includes T1110.003",
+          "passed": true,
+          "evidence": "Lines 22-25: 'tactics:\\n  - CredentialAccess' and 'relevantTechniques:\\n  - T1110.003'."
+        },
+        {
+          "text": "rule.yaml includes incident grouping or suppression settings (incidentConfiguration.groupingConfiguration or suppressionDuration) or alert enrichment (customDetails / alertDetailsOverride)",
+          "passed": true,
+          "evidence": "incidentConfiguration.groupingConfiguration enabled, lookbackDuration 5h, groupByEntities [IP] (lines 147-155); suppressionDuration: 5h with suppressionEnabled: false (lines 156-157); customDetails with 6 keys (lines 134-140); alertDetailsOverride with display name, description using {{DetectionReason}} and alertSeverityColumnName: Severity (lines 141-144)."
+        },
+        {
+          "text": "The query selects the hourly run window on ingestion_time() (the documented no-gap/no-duplicate form), not merely a declared delay variable used as a recency guard",
+          "passed": true,
+          "evidence": "programmatic: ingestion_time() run-window filter present (incl. coalesce(ingestion_time(), TimeGenerated) form)"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "threat-report-to-hunt-pack",
+      "eval_name": "threat-report-to-hunt-pack",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 11,
+        "failed": 0,
+        "total": 11,
+        "time_seconds": 853.2,
+        "tokens": 178085,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "hunts.md separates indicator-based queries (domains, IP, hash) from behaviour-based queries and labels which is which",
+          "passed": true,
+          "evidence": "Section 1 table carries a 'Tier' column per report step: 'IOC (network)', 'Artefact (static string)', 'IOC (hash)', 'Behaviour'; sections are split as '## 3. Tier 1 \u2014 network IOC (fast, brittle)', '## 4. Tier 2 \u2014 static artefacts (hash, path)', '## 5. Tier 3 \u2014 behaviour (survives infrastructure and hash changes)'; each query header repeats the tier ('H5 - behaviour (tier 3)')."
+        },
+        {
+          "text": "No behaviour query matches the full sample command line verbatim or relies solely on sample-specific strings (the task name 'OneDrive Sync Health', 'upd.exe', the fictional hash) \u2014 behaviour queries anchor on the process (conhost/powershell/schtasks via FileName) and a few invariant tokens such as --headless, irm/iex, /create with an AppData\\Roaming path",
+          "passed": true,
+          "evidence": "H5 anchors 'FileName in~ (ShellNames)', 'InitiatingProcessFileName =~ \"conhost.exe\"', 'InitiatingProcessCommandLine has \"headless\"' then matches unordered CradleFetch/CradleExec tokens (irm/iwr/iex...). H7 anchors 'FileName =~ \"schtasks.exe\"', 'Canon has \"create\"', 'Canon has \"Roaming\" or Canon contains \"%APPDATA%\"'. H6 keys on the task action path in TaskContent. The task name is a flag only ('OneDriveLookalike = TaskName has \"OneDrive\"'); IOC table row says 'task name ... not anchored'; H4 states 'the file name is NOT anchored (upd.exe is trivially renamed)'. No query matches the full sample line."
+        },
+        {
+          "text": "IOC values are declared once (let dynamic list or externaldata) and bound to appropriate columns and operators: domains with has_any on RemoteUrl/Url-type columns, the IP with in/== on RemoteIP",
+          "passed": true,
+          "evidence": "Every block declares 'let C2Domains = dynamic([\"cdn-updates-check.com\", \"telemetry-sync-cloud.net\"]); let C2IPs = dynamic([\"203.0.113.45\"]);' (repeated per block by stated design, 'one block at a time') and binds them 'RemoteUrl has_any (C2Domains) or RemoteIP in (C2IPs)' (H1), 'RemoteUrl has_any (C2Domains) or RemoteIP in (C2IPs) or SHA256 in~ (PayloadSHA256)' (H10), 'DestinationIP in (C2IPs) ... RequestURL has_any (C2Domains)' (S1). No IOC literal appears outside a let. Auto-grade agreed."
+        },
+        {
+          "text": "hunts.md includes a query over the vendor's own alerts (AlertInfo/AlertEvidence or SecurityAlert) for this campaign",
+          "passed": true,
+          "evidence": "H10 'Defender's own alerts touching this campaign' queries AlertInfo joined to AlertEvidence with IOC and 'headless'/'Roaming','msbuild' evidence predicates; S2 queries SecurityAlert with 'AlertName has_any (AlertTitleTerms) or Entities has_any (C2Domains)...'."
+        },
+        {
+          "text": "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
+          "passed": true,
+          "evidence": "Section 1 'MITRE mapping' table maps every query: H1/S1 T1071.001, H2 T1041, H3 T1105, H4 T1105+T1036.005, H5/D1 T1059.001+T1105+T1564.003 (context T1204.004), H6/H7 T1053.005, H8 T1071.001, H9 T1204.004; H10/S2 marked '\u2014 (vendor alerts carry their own mapping)' with a reason, not a placeholder. D1 header repeats 'MITRE: T1059.001, T1105, T1564.003 (context T1204.004)'."
+        },
+        {
+          "text": "hunts.md states for each query (or group) whether it is a detection candidate or hunt-only, with a reason tied to expected noise or precision",
+          "passed": true,
+          "evidence": "Section 9 table gives Promote? per query with a noise/precision reason: 'H1 network IOC | No \u2014 indicator store ... rotated infra', 'H5 headless conhost cradle | Yes, strongest candidate', 'H6 ... Yes, after tuning ... two weeks of hunt output to seed the allow-list; first-run noise burst', 'H8 ... Not yet \u2014 hunt only ... promotion needs a persisted destination baseline', 'H9 RunMRU | Maybe ... only if the preflight shows RunMRU coverage'. Each query header also carries 'FP rate label: Low/Medium/High'."
+        },
+        {
+          "text": "hunts.md recommends validating the behaviour queries against the report's sample command lines (lab/test fixture) or explicitly marks queries as untested",
+          "passed": true,
+          "evidence": "Every query header states 'UNTESTED - derived from report, no sample run'. Section 8 'TP fixtures \u2014 the report's own samples' supplies datatable fixtures F1 (conhost --headless sample refanged, plus benign and gap rows with expected outcomes) and F2 (schtasks sample) and instructs 'Run each fixture today ... paste the fixture's let block above the target query'; section 10: 'Re-run fixtures F1/F2 after any edit: the TP row must still fire.'"
+        },
+        {
+          "text": "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)",
+          "passed": true,
+          "evidence": "Auto-grade: '17 query block(s); unbounded: 0'. Verified: preflight 'Timestamp > ago(7d)', H1-H10 'Timestamp > ago(TimeFrame)' with 'let TimeFrame = 30d;', S1/S2 'TimeGenerated > ago(TimeFrame)' (90d), S1b '_Im_Dns(starttime = ago(TimeFrame)...)', D1 'ingestion_time() > ago(4h)'. F1/F2 are datatable fixtures, not table queries."
+        },
+        {
+          "text": "Every join in every query states an explicit kind= (no bare join) and every make_set/make_list is capped \u2014 check by running: python3 -I /home/user/RootkitResearch/skills/sentinel-fp-workflow/scripts/kql_lint.py --hunt <run>/hunts.md and reporting any E001 or W005 lines (quote the summary line as evidence; other codes do not count for this assertion)",
+          "passed": true,
+          "evidence": "kql_lint.py --hunt A/hunts.md summary line: '-- 0 error(s), 0 warning(s)'. No E001 or W005 lines. Joins in H2 and H10 are 'join kind=leftouter'; every make_set is capped (e.g. 'make_set(ActionType, 10)')."
+        },
+        {
+          "text": "At least one behaviour query that is proposed as a detection candidate already carries the XDR required columns (Timestamp, ReportId, DeviceId) in its output or the promotion notes state they must be added",
+          "passed": true,
+          "evidence": "H5 (the 'strongest candidate') projects 'Timestamp, DeviceName, AccountName, ... DeviceId, ReportId'; D1 recovers them after aggregation: 'summarize (Timestamp, ReportId) = arg_min(Timestamp, ReportId) ... by DeviceId, DeviceName, AccountSid, AccountName, InitiatingProcessId | project Timestamp, ReportId, DeviceId, ...'."
+        },
+        {
+          "text": "hunts.md names at least one tenant precondition that would make an empty result untrustworthy (e.g. the DnsQueryResponse/HttpConnectionInspected inspection events, ScheduledTaskCreated ActionType availability, RunMRU registry coverage, SecurityEvent 4698 auditing, MDE network sampling)",
+          "passed": true,
+          "evidence": "Section 2 'Preflight \u2014 know your data': 'Three of the queries depend on sub-event types that are not present in every tenant. A zero here means \"no telemetry\", not \"no attack\"' and checks DeviceEvents.ScheduledTaskCreated, HttpConnectionInspected, DnsQueryResponse and RunMRU, with verdict text 'NOT SEEN in 7d - treat that query's zero rows as no coverage'. H1 DATA line: 'sampled: yes (MDE throttles network logging)'."
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "xdr-first-seen-lsass-access",
+      "eval_name": "xdr-first-seen-lsass-access",
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 10,
+        "failed": 0,
+        "total": 10,
+        "time_seconds": 450.0,
+        "tokens": 144441,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "detection.kql projects Timestamp, ReportId and DeviceId in its final output (XDR required columns), recovered via arg_max/arg_min after any summarize",
+          "passed": true,
+          "evidence": "Lines 104-118: `summarize (Timestamp, ReportId, ...) = arg_min(Timestamp, ReportId, ...) ... by DeviceId, DeviceName, ProcessKey, InitiatingProcessFileName`; final `project-reorder Timestamp, DeviceId, ... ReportId` (lines 127-131). The inner join subquery projects only FleetDeviceCount/FleetEventCount/ProcessKey so no column collision; 15 names on the tuple LHS match 15 arg_min return columns."
+        },
+        {
+          "text": "detection.kql computes the 'seen before' baseline from a window that ends before the recent window starts (a guard gap such as between(ago(30d)..ago(1d)) vs > ago(1d)), not an overlapping window",
+          "passed": true,
+          "evidence": "Line 79: `| where Timestamp between (ago(BaselineDays) .. ago(GuardGap))` with `GuardGap = query_period + query_wait` = 5h (line 30); recent half line 89 `ingestion_time() > ago(query_period)` (4h). Baseline ends 1h before the recent window opens. Auto-grade confirmed."
+        },
+        {
+          "text": "Every join in detection.kql states an explicit kind= (or the comparison uses !in / leftanti anti-join); there is no bare join",
+          "passed": true,
+          "evidence": "Two joins, both explicit: line 101 `join kind=leftanti Known on ProcessKey`, line 119 `join kind=inner (...) on ProcessKey`. Grep found no bare `join`."
+        },
+        {
+          "text": "detection.kql does not restrict the recent-window rows with a Timestamp filter of 4h or less (XDR evaluates the lookback on ingestion_time); any explicit Timestamp bound applies only to the baseline half",
+          "passed": true,
+          "evidence": "Recent half (lines 87-97) carries no Timestamp predicate at all; its only time bound is `ingestion_time() > ago(query_period)` (line 89). The sole explicit Timestamp bound is the baseline `between` on line 79. Comment on line 24 states the ingestion_time rationale."
+        },
+        {
+          "text": "lsass.exe and other file-name comparisons in detection.kql are case-insensitive (=~, in~, has) and the first-seen key includes a process identity stronger than the display name alone (SHA1/SHA256/signer or FolderPath)",
+          "passed": true,
+          "evidence": "`FileName =~ \"lsass.exe\"` on lines 81 and 91; exclusion/trust lists compared with `!in~` (lines 93, 95). Key = ProcessKeyOf(InitiatingProcessFolderPath, InitiatingProcessFileName, InitiatingProcessVersionInfoCompanyName) (lines 71-75): normalised full FolderPath plus PE CompanyName, stronger than the display name."
+        },
+        {
+          "text": "Tunables (baseline length, gap, any threshold) are declared in let statements at the top of detection.kql rather than inline literals",
+          "passed": true,
+          "evidence": "Lines 22-55: query_frequency/query_period/query_wait, BaselineDays, GuardGap, MinBaselineKeys, MaxDevicesPerNewKey, IncludeCompanyInKey, RequireVmRead, ExcludedProcessKeys, TrustedCompanyNames all declared as `let` before any tabular expression (17 lets). Only inline literal is the PROCESS_VM_READ bit (binary_and(DesiredAccess, 16), line 97), a Windows constant tied to the RequireVmRead knob rather than a threshold."
+        },
+        {
+          "text": "rule.md maps the detection to MITRE ATT&CK T1003.001 (OS Credential Dumping: LSASS Memory)",
+          "passed": true,
+          "evidence": "rule.md line 12: 'Credential Access \u00b7 **T1003.001 \u2014 OS Credential Dumping: LSASS Memory**'; also kql header line 3."
+        },
+        {
+          "text": "rule.md names at least one concrete blind spot or evasion (e.g. parent-PID spoofing, a tool seen once during the baseline, baseline poisoning, slow attacker) and at least one named benign source of lsass access (AV/EDR, backup, monitoring agents)",
+          "passed": true,
+          "evidence": "Blind spots (rule.md lines 134-158): 'use an image already in the baseline' (taskmgr/rundll32 comsvcs/werfault), 'timing / slow and low ... baselined and silent for 30 d', 'mass deployment', 'path squatting', 'Self-learning: after the first alert the attacker's image is baselined after 5 h' (baseline poisoning, also lines 109-113). Benign sources (lines 120-129): 'AV/EDR pilot engine, vulnerability scanner agent, MDI sensor', 'Backup / inventory agents', 'Process Explorer, Process Hacker/System Informer, WinDbg'."
+        },
+        {
+          "text": "The baseline window ends a stated guard margin before the recent window begins (e.g. baseline ends at ago(lookback + margin)), not merely at the adjacent 4 h boundary",
+          "passed": true,
+          "evidence": "manual (from blind-grader evidence + file check): baseline `between (ago(BaselineDays) .. ago(GuardGap))` with GuardGap = 4h + 1h (rule.md: 'ending 5 h ago')"
+        },
+        {
+          "text": "rule.md describes the hourly rule's lookback as evaluated on ingestion time and does not claim that only events with Timestamp in the last 4 h are evaluated",
+          "passed": true,
+          "evidence": "manual (from blind-grader evidence + file check): rule.md line 54: recent half 'scoped only by ingestion_time() > ago(4h)'; line 104 explains the ingestion_time lookback"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "promote-hunt-to-detection",
+      "eval_name": "promote-hunt-to-detection",
+      "configuration": "old_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.917,
+        "passed": 11,
+        "failed": 1,
+        "total": 12,
+        "time_seconds": 347.0,
+        "tokens": 108320,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "detection.kql replaces the sort by Connections desc ranking with explicit threshold conditions on named let tunables",
+          "passed": true,
+          "evidence": "No 'sort by'/'order by' in B/detection.kql. Lines 22-26 hoist let MinConnections=12, MinSpanMinutes=180, BinSize=15m, MinActiveBins=8, MaxDevices=3; lines 77-79: '| where Connections >= MinConnections and SpanMinutes >= MinSpanMinutes and ActiveBins >= MinActiveBins'."
+        },
+        {
+          "text": "detection.kql keeps a population/prevalence filter (Devices <= N or equivalent) together with a minimum connection count, rather than ranking alone",
+          "passed": true,
+          "evidence": "Lines 39-45: 'let RareIPs = DeviceNetworkEvents | ... | summarize Devices = dcount(DeviceId) by RemoteIP | where Devices <= MaxDevices;' joined at line 81 '| join kind=inner RareIPs on RemoteIP', together with line 77 'Connections >= MinConnections'. Rarity is deliberately computed before process/URL exclusions (comment lines 37-38)."
+        },
+        {
+          "text": "detection.kql returns Timestamp, ReportId and DeviceId (aggregation per device or arg_max/arg_min recovery), not only per-RemoteIP rows",
+          "passed": true,
+          "evidence": "Lines 58-75: summarize ... '(Timestamp, ReportId, DeviceName, Protocol, ...) = arg_max(Timestamp, ReportId, DeviceName, Protocol, ...)' ... 'by DeviceId, RemoteIP'. Final project (line 83) starts 'Timestamp, ReportId, DeviceId, DeviceName'."
+        },
+        {
+          "text": "Every make_set / make_list call in detection.kql includes a size cap argument",
+          "passed": true,
+          "evidence": "Three calls, all capped with MaxSetSize (=10): line 63 'make_set(RemotePort, MaxSetSize)', line 64 'make_set(RemoteUrl, MaxSetSize)', line 65 'make_set(InitiatingProcessFileName, MaxSetSize)'. No make_list."
+        },
+        {
+          "text": "promotion-notes.md states that an hourly XDR custom detection has a fixed lookback (4 hours) so the hunt's 7-day window cannot be kept as-is, and proposes a concrete resolution (shorter window, a 24h/30d schedule, or a persisted baseline)",
+          "passed": true,
+          "evidence": "Notes line 16: 'Lookback | 4 h (fixed by platform) | Not configurable at 1 h frequency; drives every threshold below'; line 27: '7 d is impossible at 1 h frequency anyway'; line 28: 'A 4 h window can never contain a >12 h span - the hunt condition would silently never fire. The triad expresses the same idea (sustained + regular) inside 4 h'. Resolutions proposed: the 4 h cadence triad, line 37 'run a sibling rule at 12 h / 48 h lookback that keeps the hunt's long-span logic', and line 67 Sentinel queryPeriod up to 14 d."
+        },
+        {
+          "text": "promotion-notes.md addresses alert volume and deduplication (the 150-alerts-per-run cap, platform dedup, or aggregating to one row per device/destination)",
+          "passed": true,
+          "evidence": "Notes line 52: 'if it approaches the 150 alerts/run cap it is silently truncating'; line 53: 'Alerts per run vs. the 150 cap. Anything sustained above ~50/run means ...'; line 30: 'Alert is per device/IP pair = the investigation entity, so platform dedup works'; line 54 discusses repeat alerts per run and switching to arg_min for a stable dedup key."
+        },
+        {
+          "text": "promotion-notes.md names MDE network telemetry sampling/throttling or shared destinations (CDNs, Windows Update, telemetry endpoints) as a source of false negatives/positives",
+          "passed": true,
+          "evidence": "Notes line 55: 'Top FP drivers to expect ... EDR/monitoring agents and telemetry uploaders; ... NTP, licensing and update servers; CDN/anycast edges where each device gets its own IP (looks rare per device - exclude by RemoteUrl term, never by IP)'. Shared destinations named as FP source. Note: B never mentions MDE network telemetry sampling/throttling (grep for sampl/throttl returns nothing), so it passes only on the 'shared destinations' branch."
+        },
+        {
+          "text": "promotion-notes.md includes a post-deployment check such as the first-run 30-day scan noise burst, an expected volume, or a scheduled review",
+          "passed": true,
+          "evidence": "Notes line 52: 'First run scans 30 days, not 4 h ... Expect a burst; if it approaches the 150 alerts/run cap it is silently truncating ... create the rule with a temporarily stricter MinConnections (e.g. 200) and relax it after the first run'; line 53 gives an expected volume ceiling (~50/run); line 58: 'Schedule the 7-day post-deploy review'."
+        },
+        {
+          "text": "detection.kql contains no Timestamp > ago() / Timestamp >= ago() filter on the recent rows (XDR evaluates the lookback on ingestion_time; such a filter drops late-arriving events)",
+          "passed": true,
+          "evidence": "programmatic: Timestamp > ago() filter ABSENT"
+        },
+        {
+          "text": "promotion-notes.md explicitly mentions the 150-alerts-per-run cap of XDR custom detections",
+          "passed": true,
+          "evidence": "programmatic: '150' found"
+        },
+        {
+          "text": "promotion-notes.md explicitly names MDE network telemetry sampling or throttling as a false-negative source (not only shared destinations)",
+          "passed": false,
+          "evidence": "programmatic: sampling/throttling term not found"
+        },
+        {
+          "text": "promotion-notes.md explicitly mentions the first-run 30-day scan (initial noise burst) or schedules a dated post-deploy review",
+          "passed": true,
+          "evidence": "programmatic: first-run/30-day term found"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "review-and-fix-flawed-query",
+      "eval_name": "review-and-fix-flawed-query",
+      "configuration": "old_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 8,
+        "failed": 0,
+        "total": 8,
+        "time_seconds": 305.3,
+        "tokens": 100156,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "review.md identifies the join without kind= (default innerunique dedup) as a problem",
+          "passed": true,
+          "evidence": "review.md #16: \"Join has no explicit `kind=` \u2014 default flavour is `innerunique`, which dedups the left side by `DeviceId` and silently drops rows\""
+        },
+        {
+          "text": "review.md identifies that TimeGenerated is the wrong time column for a Defender XDR (Advanced Hunting) query and/or that the Timestamp/TimeGenerated > ago(1h) filter on the recent window is wrong for an hourly custom detection",
+          "passed": true,
+          "evidence": "review.md #1: \"`TimeGenerated` is not an Advanced Hunting column \u2014 XDR tables expose `Timestamp`...\"; #2: \"Self-inflicted `| where TimeGenerated > ago(1h)` \u2014 the service pre-filters to the rule's lookback (hourly => 4 h, evaluated on `ingestion_time()`); a 1 h event-time filter fights that and silently drops late-arriving events.\" Both halves identified."
+        },
+        {
+          "text": "review.md identifies the full command-line string literals as brittle (argument order/quoting) and/or the 2\u20133 character has_any terms as unindexed/noisy",
+          "passed": true,
+          "evidence": "review.md #12: \"`has_any (Commands)` matches full, exact, ordered strings \u2014 attackers reorder and pad arguments ... so coverage is brittle\"; #11: \"Those three terms are <=3 characters, so they are not term-indexed \u2014 forces a full command-line scan\". Both halves identified."
+        },
+        {
+          "text": "review.md identifies the case-sensitive FileName == comparisons",
+          "passed": true,
+          "evidence": "review.md #20: \"Chained `FileName == ... or FileName == ...` is case-sensitive and un-indexed as a list \u2014 image casing varies (`VSSADMIN.EXE`), so use `FileName in~ (list)`\""
+        },
+        {
+          "text": "review.md identifies the positional index parse_json(AdditionalFields)[1].value as brittle",
+          "passed": true,
+          "evidence": "review.md #6: \"...parent process is already a first-class column (`InitiatingProcessFileName` / `InitiatingProcessCommandLine`), and positional `[1].value` on a JSON object is undefined behaviour.\" Also notes AdditionalFields is not a DeviceProcessEvents column."
+        },
+        {
+          "text": "review.md identifies that summarizing by DeviceName drops DeviceId and/or that the required Timestamp and ReportId columns are missing from the output",
+          "passed": true,
+          "evidence": "review.md #3: \"Required columns are destroyed by the final `summarize` \u2014 `Timestamp`, `ReportId` and `DeviceId` are not in the output\"; #4: \"Aggregates by `DeviceName` (display name) instead of `DeviceId`\". Both halves identified."
+        },
+        {
+          "text": "fixed.kql projects Timestamp, ReportId and DeviceId, every join states kind=, and every make_set/make_list is capped",
+          "passed": true,
+          "evidence": "Verified by reading fixed.kql (auto-grade agrees): `summarize arg_max(Timestamp, *), ... by DeviceId` then `| project Timestamp, ReportId, DeviceId, DeviceName, ...`. No `join` anywhere (kind= clause vacuous). Three make_set calls, all capped at 10: `make_set(Technique, 10)`, `make_set(ProcessCommandLine, 10)`, `make_set(InitiatingProcessFileName, 10)`. No make_list."
+        },
+        {
+          "text": "fixed.kql produces 0 errors and 0 warnings from the skill's scripts/kql_lint.py --platform xdr (programmatic check)",
+          "passed": true,
+          "evidence": "Re-run after fixing a linter false positive (scalar `contains \"x\"` followed by a case() label on the next line was parsed as a term list): `-- 0 error(s), 0 warning(s)`. Original result 0 errors / 3 spurious W015 warnings."
+        }
+      ],
+      "notes": [
+        "review.md states unit fixtures could not be executed (no tenant access) and asks the reader to keep them under tests/fixtures/<rule>/ and re-run on every exclusion change; the fixtures themselves are not in the output folder.",
+        "ExcludedInitiatingFolders ships pre-populated with four vendor terms (Veeam, Commvault, Veritas, Backup Exec) using has_any on the folder path; the review itself advises validating against 7 days of live data before go-live."
+      ]
+    },
+    {
+      "eval_id": "sentinel-password-spray-rule",
+      "eval_name": "sentinel-password-spray-rule",
+      "configuration": "old_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.889,
+        "passed": 8,
+        "failed": 1,
+        "total": 9,
+        "time_seconds": 356.3,
+        "tokens": 98801,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "rule.yaml has queryPeriod strictly longer than queryFrequency (no zero-overlap 1h/1h window) or the query selects the run window on ingestion_time()",
+          "passed": true,
+          "evidence": "queryFrequency: PT1H (line 53), queryPeriod: PT4H (line 54); 4h > 1h, so consecutive runs overlap by 3h. ingestion_time() is not used."
+        },
+        {
+          "text": "The query handles ingestion delay explicitly: it uses ingestion_time() or declares a delay/wait window (e.g. let query_wait / ingestion_delay) that is added to the scan window",
+          "passed": true,
+          "evidence": "OVERRIDE of auto-grade (auto regex missed the CamelCase name). Query declares 'let IngestionDelayAllowance = 30m;   // Entra sign-in logs typically land 5-30 min late' (line 65) and applies it as '| where LastFailure > ago(RunFrequency + IngestionDelayAllowance)' (line 109), i.e. the delay is added to the per-run activity window; the event scan itself is the wider 4h window (line 84). Caveat: ingestion_time() is not used, so an IP whose spray is still active will re-fire on consecutive hourly runs (mitigated only by 12h incident grouping), and the guard is on TimeGenerated, so an event ingested >90 min late is scanned but never alerted. The handling is explicit and deliberate, so this passes on the assertion as written."
+        },
+        {
+          "text": "Result codes are declared in let lists (not scattered inline) and the logic distinguishes MFA/Conditional-Access interrupt codes (e.g. 50074, 50076, 53003, 50158) as credential-valid from true credential failures (50126, 50053)",
+          "passed": true,
+          "evidence": "Lines 71 and 75: 'let FailureCodes = dynamic([\"50126\", \"50053\", \"50056\"]);' and 'let ValidCredentialCodes = dynamic([\"0\", \"50055\", \"50072\", \"50074\", \"50076\", \"50140\", \"53003\", \"530032\"]);'. Line 87 'extend IsFailure = ResultType in (FailureCodes)' and lines 92-97 split failures (countif/dcountif/make_set_if on IsFailure) from hits (not(IsFailure)); hits raise severity to High (line 119). Interrupt codes 50074/50076/53003 are on the credential-valid side; 50158 and 53000-53002 are omitted, which the 'e.g.' wording tolerates."
+        },
+        {
+          "text": "The query aggregates by source IPAddress with a distinct count of user principals (dcount) and the threshold(s) are declared in let statements",
+          "passed": true,
+          "evidence": "OVERRIDE of auto-grade (auto regex looked for dcount( and missed dcountif). Line 94 'DistinctFailedUsers = dcountif(Account, IsFailure)' inside summarize ... 'by IPAddress' (line 103); threshold 'let MinDistinctUsers = 10;' (line 66) applied at line 105 '| where DistinctFailedUsers >= MinDistinctUsers'. Secondary threshold MinFailureRatio also in a let (line 67)."
+        },
+        {
+          "text": "entityMappings contains an IP entity whose columnName appears, with identical casing, in the final projection of the query",
+          "passed": true,
+          "evidence": "entityMappings IP/Address columnName: IPAddress (lines 149-152). Final '| project' (lines 127-146) begins with 'IPAddress' - exact case match. Account entity columns HitAccountName/HitUPNSuffix are also in the projection."
+        },
+        {
+          "text": "Every make_set / make_list call in the query includes a size cap argument",
+          "passed": true,
+          "evidence": "7 make_set/make_set_if calls in non-comment code, all capped: make_set_if(..., MaxListedUsers) x2 (MaxListedUsers=50 declared at line 68), make_set(ResultType,10), make_set(AppDisplayName,10), make_set(ClientAppUsed,10), make_set(UserAgent,10), make_set(Location,5) (lines 96-102). Zero uncapped. An uncapped make_list(Entity) exists only inside a commented-out watchlist example (line 80) and is not executed."
+        },
+        {
+          "text": "tactics includes CredentialAccess and relevantTechniques includes T1110.003",
+          "passed": true,
+          "evidence": "Lines 57-60: 'tactics:\\n  - CredentialAccess' and 'relevantTechniques:\\n  - T1110.003'."
+        },
+        {
+          "text": "rule.yaml includes incident grouping or suppression settings (incidentConfiguration.groupingConfiguration or suppressionDuration) or alert enrichment (customDetails / alertDetailsOverride)",
+          "passed": true,
+          "evidence": "incidentConfiguration.groupingConfiguration enabled, lookbackDuration PT12H, groupByEntities [IP] (lines 179-189); customDetails with 13 keys (lines 159-172); alertDetailsOverride with display name, description and alertSeverityColumnName: Severity (lines 173-176). All referenced columns exist in the final projection."
+        },
+        {
+          "text": "The query selects the hourly run window on ingestion_time() (the documented no-gap/no-duplicate form), not merely a declared delay variable used as a recency guard",
+          "passed": false,
+          "evidence": "programmatic: ingestion_time() run-window filter absent"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "threat-report-to-hunt-pack",
+      "eval_name": "threat-report-to-hunt-pack",
+      "configuration": "old_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.91,
+        "passed": 10,
+        "failed": 1,
+        "total": 11,
+        "time_seconds": 400.2,
+        "tokens": 106735,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "hunts.md separates indicator-based queries (domains, IP, hash) from behaviour-based queries and labels which is which",
+          "passed": true,
+          "evidence": "Run-order table splits step 2 'Pure IOC matches; near-zero noise' (H3a, H4b, H6) from step 3 'Behavioural; catches variants the IOCs miss' (H1a, H2b, H4a). Hunt index 'Detection candidate' column marks 'No \u2014 IOC only' for H4b/H6 and 'No \u2014 push IOCs to Defender Indicators + Sentinel TI instead' for H3a; section 4: 'IOC-only hunts (H3a, H4b, H5, H6) fail gate 1 for a rule (they are indicators, not behaviour)'."
+        },
+        {
+          "text": "No behaviour query matches the full sample command line verbatim or relies solely on sample-specific strings (the task name 'OneDrive Sync Health', 'upd.exe', the fictional hash) \u2014 behaviour queries anchor on the process (conhost/powershell/schtasks via FileName) and a few invariant tokens such as --headless, irm/iex, /create with an AppData\\Roaming path",
+          "passed": true,
+          "evidence": "H1a: 'InitiatingProcessFileName =~ \"conhost.exe\"', 'InitiatingProcessCommandLine has \"headless\"', 'FileName in~ (shells)', 'HasCradle = Canon has_any (cradle_terms)' (irm/iwr/iex/...). H2a: 'FileName =~ \"schtasks.exe\"', parse_command_line, 'CreateIdx >= 0 and TrIdx >= 0', 'TaskAction contains @\"\\appdata\\roaming\\\"'; task name only feeds flags (IocTaskName, MasqueradeName). H2b keys on TaskContent containing '\\AppData\\Roaming\\' with the task name as an additive 'or'. H4a: dropper process list + Roaming + PE extension. 'upd.exe' appears in behaviour queries only as the 'MsbuildMasquerade' flag in H3b."
+        },
+        {
+          "text": "IOC values are declared once (let dynamic list or externaldata) and bound to appropriate columns and operators: domains with has_any on RemoteUrl/Url-type columns, the IP with in/== on RemoteIP",
+          "passed": true,
+          "evidence": "Hoisted IOC block declares once: 'let ioc_domains = dynamic([\"cdn-updates-check.com\", \"telemetry-sync-cloud.net\"]); let ioc_ips = dynamic([\"203.0.113.45\"]); let ioc_sha256 = ...'. Bound as 'RemoteIP in (ioc_ips) or RemoteUrl has_any (ioc_domains)' (H3a, H5), 'Url has_any (ioc_domains)' (H6, H3c), 'DstIpAddr in (ioc_ips)' / 'DestinationIP in (ioc_ips)' (H3c). The two Sentinel-only blocks redeclare the same lets so they stand alone; no domain/IP/hash literal appears outside a let. Watchlist alternative is described."
+        },
+        {
+          "text": "hunts.md includes a query over the vendor's own alerts (AlertInfo/AlertEvidence or SecurityAlert) for this campaign",
+          "passed": true,
+          "evidence": "H5 'Did Defender already alert on any of this?': 'AlertEvidence | where Timestamp > ago(lookback) | where SHA256 in (ioc_sha256) or RemoteIP in (ioc_ips) or RemoteUrl has_any (ioc_domains) or (FolderPath has \"msbuild\" ...) or (ProcessCommandLine has \"headless\" and ProcessCommandLine has \"conhost\") ...' projecting AlertId, Title, Severity, Category, DetectionSource."
+        },
+        {
+          "text": "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
+          "passed": true,
+          "evidence": "Hunt index MITRE column per hunt: H1a 'T1204.004, T1059.001, T1105, T1564.003', H1b 'T1204.004, T1059.001', H1c T1204.004, H2a 'T1053.005, T1036.005', H2b/H2c T1053.005, H3a T1071.001, H3b 'T1071.001, T1041', H3c T1041, H4a T1105, H4b 'T1105, T1036.005', H6 T1204.004; H5 (alert sweep) '\u2014'. The detection-ready H1a draft inherits H1a's mapping and the YAML template repeats 'relevantTechniques: [T1204.004, T1059.001, T1105]'."
+        },
+        {
+          "text": "hunts.md states for each query (or group) whether it is a detection candidate or hunt-only, with a reason tied to expected noise or precision",
+          "passed": true,
+          "evidence": "Hunt index 'Detection candidate' column for every hunt plus section 4 table with verdict and blocker: 'H1a | Promote | ... every HasCradle == true row must be explained'; 'H2b | Promote after baseline | ... roaming_allowlist populated'; 'H1b | Hunt first, promote if quiet | Expect admin one-liner noise'; 'H3b (narrow) | Later | ... expect first-run noise burst'; 'H1c | No | Coverage unverified'; 'H3a, H4b, H5, H6 | No rule | Defender Indicators + Sentinel TI'. Each hunt also has 'Expected volume' and 'Benign lookalikes' text."
+        },
+        {
+          "text": "hunts.md recommends validating the behaviour queries against the report's sample command lines (lab/test fixture) or explicitly marks queries as untested",
+          "passed": true,
+          "evidence": "Status line: 'queries are written, reviewed against the KQL quality checklist, and are NOT yet executed (no tenant access from the authoring session)'. Promotion checklist step 3: 'Unit fixtures under tests/fixtures/<rule-id>/: tp.json (the exact PASTEJACK chain from the report), tn_*.json (...), empty.json. Build the test queries with scripts/kql_test_harness.py'. H1c: 'Validate once by typing a harmless command in Run on a test device'."
+        },
+        {
+          "text": "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)",
+          "passed": false,
+          "evidence": "Auto-grade flagged 2 unbounded blocks; partially upheld. The hoisted IOC block (line 28) is let-only and not a query (override), and the pre-grader's fence tracking broke on the ```yaml block. But the 'Detection-ready form of H1a' (line 554 onward) is a real DeviceProcessEvents query with no ago()/between/ingestion_time() bound at all; the text states it deliberately: 'no self-inflicted Timestamp filter (the service pre-filters to the lookback)'. The assertion says every KQL query; run A shows the same draft can carry 'ingestion_time() > ago(4h)'. All 15 hunt queries are bounded via 'Timestamp > ago(lookback)' / 'TimeGenerated > ago(lookback)' / '_Im_WebSession(starttime = ago(lookback) ...)'."
+        },
+        {
+          "text": "Every join in every query states an explicit kind= (no bare join) and every make_set/make_list is capped \u2014 check by running: python3 -I /home/user/RootkitResearch/skills/sentinel-fp-workflow/scripts/kql_lint.py --hunt <run>/hunts.md and reporting any E001 or W005 lines (quote the summary line as evidence; other codes do not count for this assertion)",
+          "passed": true,
+          "evidence": "kql_lint.py --hunt C/hunts.md summary line: '-- 0 error(s), 1 warning(s)'. The single warning is W015 (H2c has_any on full strings), which does not count. No E001 or W005. The one join (H3b) is 'join kind=leftouter ... on $left.InitiatingProcessSHA1 == $right.SHA1'; all make_set calls are capped (e.g. 'make_set(RemoteUrl, 15)', 'make_set(ProcessCommandLine, 5)')."
+        },
+        {
+          "text": "At least one behaviour query that is proposed as a detection candidate already carries the XDR required columns (Timestamp, ReportId, DeviceId) in its output or the promotion notes state they must be added",
+          "passed": true,
+          "evidence": "H1a (index: 'Yes \u2014 XDR NRT or 1h') projects 'Timestamp, DeviceId, DeviceName, AccountName, ..., ReportId'. The detection-ready form recovers them after aggregation: 'summarize (Timestamp, ReportId) = arg_max(Timestamp, ReportId) ... by DeviceId, DeviceName, AccountSid, AccountName' and the text states 'Timestamp, ReportId, DeviceId, DeviceName recovered after summarize'."
+        },
+        {
+          "text": "hunts.md names at least one tenant precondition that would make an empty result untrustworthy (e.g. the DnsQueryResponse/HttpConnectionInspected inspection events, ScheduledTaskCreated ActionType availability, RunMRU registry coverage, SecurityEvent 4698 auditing, MDE network sampling)",
+          "passed": true,
+          "evidence": "Section 5 'Things to verify in the tenant before trusting a \"no results\"': 'DnsConnectionInspected requires the network-protection DNS inspection feature; if absent, H3a DNS leg is silent'; 'DeviceEvents ScheduledTaskCreated requires a current MDE sensor; if H2b returns nothing but H2a shows task creations, the ActionType is not populated'; 'Sentinel H2c needs the \"Other Object Access Events\" audit subcategory'; H1c: 'RunMRU is not guaranteed to be collected ... treat it as \"not collected\", not \"absent\"'."
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "xdr-first-seen-lsass-access",
+      "eval_name": "xdr-first-seen-lsass-access",
+      "configuration": "old_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.9,
+        "passed": 9,
+        "failed": 1,
+        "total": 10,
+        "time_seconds": 395.7,
+        "tokens": 140064,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "detection.kql projects Timestamp, ReportId and DeviceId in its final output (XDR required columns), recovered via arg_max/arg_min after any summarize",
+          "passed": true,
+          "evidence": "Line 91 `summarize arg_max(Timestamp, *), ... by ProcKey, DeviceId` in RecentOpens; final `project Timestamp, ReportId, DeviceId, DeviceName, ...` (lines 100-102) after `join kind=inner (RecentOpens) on ProcKey`. NewKeys contributes only ProcKey/FleetFirst*/Fleet*Count so Timestamp/ReportId/DeviceId come unambiguously from the arg_max row. Grain is one row per (process key, device)."
+        },
+        {
+          "text": "detection.kql computes the 'seen before' baseline from a window that ends before the recent window starts (a guard gap such as between(ago(30d)..ago(1d)) vs > ago(1d)), not an overlapping window",
+          "passed": true,
+          "evidence": "OVERRIDE of auto-grade (which looked for an explicit `.. ago(x)` or `<= ago(x)` literal). The baseline is computed implicitly but non-overlapping: lines 77-84 `summarize FleetFirstIngested = min(IngestedAt) ... by ProcKey | where FleetFirstIngested > ago(LookbackWindow)` marks a key new only if NO record of it was ingested before ago(4h); the recent half is `IngestedAt > ago(LookbackWindow)` (line 90). 'Seen before' = ingestion_time <= ago(4h), 'recent' = ingestion_time > ago(4h): disjoint and adjacent on the same clock, the same shape as the assertion's own example, and a recent event cannot whitelist itself. No extra margin beyond the boundary, like run B."
+        },
+        {
+          "text": "Every join in detection.kql states an explicit kind= (or the comparison uses !in / leftanti anti-join); there is no bare join",
+          "passed": true,
+          "evidence": "Single join, explicit: line 99 `| join kind=inner (RecentOpens) on ProcKey`. Novelty itself is computed by summarize/min rather than an anti-join. No bare join."
+        },
+        {
+          "text": "detection.kql does not restrict the recent-window rows with a Timestamp filter of 4h or less (XDR evaluates the lookback on ingestion_time); any explicit Timestamp bound applies only to the baseline half",
+          "passed": true,
+          "evidence": "Recent rows are selected by `IngestedAt > ago(LookbackWindow)` (line 90) where IngestedAt = ingestion_time() (line 55); novelty uses min(IngestedAt) (lines 79-84). The only Timestamp predicate is the 30d scan bound `Timestamp > ago(BaselineWindow)` (line 51) on the shared source set, which is the baseline horizon and not a <=4h restriction; a late-arriving event with any Timestamp inside 30d still reaches the recent half and fires. Header comment lines 13-18 states the ingestion_time rationale explicitly."
+        },
+        {
+          "text": "lsass.exe and other file-name comparisons in detection.kql are case-insensitive (=~, in~, has) and the first-seen key includes a process identity stronger than the display name alone (SHA1/SHA256/signer or FolderPath)",
+          "passed": true,
+          "evidence": "OVERRIDE of auto-grade (which looked for a literal `=~ \"lsass.exe\"`). Line 53 `| where FileName in~ (TargetProcessNames)` with TargetProcessNames = dynamic([\"lsass.exe\"]) is case-insensitive; `endswith` on line 64 is case-insensitive in KQL. Key = NormPath built from tolower(InitiatingProcessFolderPath) + file name (lines 63-73), or InitiatingProcessSHA1 in hash mode: stronger than display name. Minor: line 74 `ProcKey !in (ExcludedProcessKeys)` is case-sensitive, but ProcKey is already lower-cased and rule.md line 62 instructs copying keys from the alert, so the comparison is effectively case-insensitive on the data side (a mis-cased exclusion would fail open, not cause a miss)."
+        },
+        {
+          "text": "Tunables (baseline length, gap, any threshold) are declared in let statements at the top of detection.kql rather than inline literals",
+          "passed": true,
+          "evidence": "Lines 23-46 'Tunables' block: LookbackWindow, BaselineWindow, TargetProcessNames, MemoryAccessBits, RequireMemoryAccess, BaselineKeyMode, SuppressRolloutDeviceCount, ExcludedProcessKeys all as `let` before any tabular expression (11 lets). Remaining inline numbers are make_set caps (16), output shaping."
+        },
+        {
+          "text": "rule.md maps the detection to MITRE ATT&CK T1003.001 (OS Credential Dumping: LSASS Memory)",
+          "passed": true,
+          "evidence": "rule.md line 11: 'Technique **T1003.001 OS Credential Dumping: LSASS Memory**'; also kql header lines 7-8."
+        },
+        {
+          "text": "rule.md names at least one concrete blind spot or evasion (e.g. parent-PID spoofing, a tool seen once during the baseline, baseline poisoning, slow attacker) and at least one named benign source of lsass access (AV/EDR, backup, monitoring agents)",
+          "passed": true,
+          "evidence": "Blind spots (rule.md lines 88-98): 'Any accessor already in the 30-day baseline ... (including your own red team's, or an admin's procdump64.exe left in c:\\tools\\)', 'Living-off-the-land via an already-baselined host process', '30-day horizon only', 'names the dropper after an already-baselined image in an already-baselined directory', 'Rollout suppression, if enabled, hides ... a mass-dump stage'. Benign sources (lines 74-84): 'AV engines, EDR sensors, vulnerability scanners, DLP agents, Sysinternals', 'Backup, VDI, and credential-management agents', 'windbg, procexp64, procmon'."
+        },
+        {
+          "text": "The baseline window ends a stated guard margin before the recent window begins (e.g. baseline ends at ago(lookback + margin)), not merely at the adjacent 4 h boundary",
+          "passed": false,
+          "evidence": "manual (from blind-grader evidence + file check): novelty cut at `FleetFirstIngested > ago(LookbackWindow)` vs baseline `<= ago(4h)` on the same clock \u2014 adjacent boundary, no margin"
+        },
+        {
+          "text": "rule.md describes the hourly rule's lookback as evaluated on ingestion time and does not claim that only events with Timestamp in the last 4 h are evaluated",
+          "passed": true,
+          "evidence": "manual (from blind-grader evidence + file check): rule.md line 43: 'novelty and candidate selection use ingestion_time(), which is what the service itself evaluates the lookback on'"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "promote-hunt-to-detection",
+      "eval_name": "promote-hunt-to-detection",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.75,
+        "passed": 9,
+        "failed": 3,
+        "total": 12,
+        "time_seconds": 174.2,
+        "tokens": 78123,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "detection.kql replaces the sort by Connections desc ranking with explicit threshold conditions on named let tunables",
+          "passed": true,
+          "evidence": "No 'sort by'/'order by' in C/detection.kql. Lines 20-26 hoist let MinConnections=12, MinSpanMinutes=120, MaxDevices=3, MinAvgIntervalS=30, MaxAvgIntervalS=1800, MaxJitterRatio=0.35; applied at line 71 'where Connections >= MinConnections', line 73 'where SpanMinutes >= MinSpanMinutes', line 79 'between (MinAvgIntervalS .. MaxAvgIntervalS)', line 81 'where JitterRatio <= MaxJitterRatio'."
+        },
+        {
+          "text": "detection.kql keeps a population/prevalence filter (Devices <= N or equivalent) together with a minimum connection count, rather than ranking alone",
+          "passed": true,
+          "evidence": "Lines 51-54: 'let RareDestinations = Base | summarize Devices = dcount(DeviceId) by RemoteIP | where Devices <= MaxDevices;' joined at line 57 '| join kind=inner RareDestinations on RemoteIP', combined with line 71 'Connections >= MinConnections'. (Caveat: rarity is computed from Base, i.e. after the ProcessAllowlist/private-range exclusions, so it is slightly weaker than an unfiltered population count, but the filter is present and gated.)"
+        },
+        {
+          "text": "detection.kql returns Timestamp, ReportId and DeviceId (aggregation per device or arg_max/arg_min recovery), not only per-RemoteIP rows",
+          "passed": true,
+          "evidence": "Line 66 'arg_min(Timestamp, ReportId)' inside the summarize keyed 'by DeviceId, RemoteIP, InitiatingProcessFileName, InitiatingProcessSHA256, Devices' (line 70); final project (lines 82-85) returns Timestamp, ReportId, DeviceId, DeviceName. Per device/destination/process rows, not per RemoteIP only."
+        },
+        {
+          "text": "Every make_set / make_list call in detection.kql includes a size cap argument",
+          "passed": true,
+          "evidence": "Three calls, all capped: line 63 'make_set(RemotePort, 10)', line 64 'make_set(RemoteUrl, 5)', line 65 'make_list(EpochSeconds, 5000)'."
+        },
+        {
+          "text": "promotion-notes.md states that an hourly XDR custom detection has a fixed lookback (4 hours) so the hunt's 7-day window cannot be kept as-is, and proposes a concrete resolution (shorter window, a 24h/30d schedule, or a persisted baseline)",
+          "passed": true,
+          "evidence": "Notes line 14: 'XDR fixes the lookback by frequency; an hourly rule only sees the last 4 hours. The 7-day window cannot be reproduced at this cadence, so the logic had to be re-based on what is visible'; line 15: 'The 12-hour test is impossible with 4h of data. Replaced with sustained for at least half the window plus a minimum volume'. Alternatives: line 42 'move the rarity check to a 24h-frequency rule (30-day lookback)' and line 49 Sentinel queryPeriod up to 14 d restoring the 7-day baseline."
+        },
+        {
+          "text": "promotion-notes.md addresses alert volume and deduplication (the 150-alerts-per-run cap, platform dedup, or aggregating to one row per device/destination)",
+          "passed": true,
+          "evidence": "Notes line 19: required columns 'taken from the first event of the beacon (arg_min) so that successive hourly runs over the same beacon return the same key and XDR de-duplicates instead of alerting every hour'; line 41: 'De-duplication behaviour. Confirm that a continuing beacon produces one alert per ~4h rather than one per hour'; line 18 one row per device/destination/process; line 40 'Volume in the first 24-48h'. Passes on the dedup/aggregation branch; the 150-alerts-per-run cap is never mentioned (grep '150' returns nothing)."
+        },
+        {
+          "text": "promotion-notes.md names MDE network telemetry sampling/throttling or shared destinations (CDNs, Windows Update, telemetry endpoints) as a source of false negatives/positives",
+          "passed": true,
+          "evidence": "Notes line 16: 'Volume alone over a short window is mostly CDN, telemetry and SaaS traffic. Periodicity is the actual beaconing signal'; line 40 lists expected FPs: 'endpoint management agents (Intune, SCCM, ...), monitoring/RMM agents, VPN clients, time sync, ... long-lived WebSocket apps (Teams, Slack, Zoom)'. Shared destinations named as FP source. C never mentions MDE telemetry sampling/throttling (grep sampl/throttl returns nothing); passes only on the shared-destinations branch."
+        },
+        {
+          "text": "promotion-notes.md includes a post-deployment check such as the first-run 30-day scan noise burst, an expected volume, or a scheduled review",
+          "passed": true,
+          "evidence": "Section 'What to watch after deployment' (lines 39-46) contains concrete post-deployment checks: line 40 'Volume in the first 24-48h. Expect the top FPs to be ...', line 41 'Confirm that a continuing beacon produces one alert per ~4h', line 42 'Watch for a weekend spike', line 44 query-cost/timeout check. Weak evidence relative to the assertion's examples: no mention of the first-run 30-day scan, no numeric expected volume, no scheduled review date. Passed because the assertion's 'such as' list is illustrative and a post-deployment check is clearly present."
+        },
+        {
+          "text": "detection.kql contains no Timestamp > ago() / Timestamp >= ago() filter on the recent rows (XDR evaluates the lookback on ingestion_time; such a filter drops late-arriving events)",
+          "passed": false,
+          "evidence": "programmatic: Timestamp > ago() filter PRESENT"
+        },
+        {
+          "text": "promotion-notes.md explicitly mentions the 150-alerts-per-run cap of XDR custom detections",
+          "passed": false,
+          "evidence": "programmatic: '150' not found"
+        },
+        {
+          "text": "promotion-notes.md explicitly names MDE network telemetry sampling or throttling as a false-negative source (not only shared destinations)",
+          "passed": false,
+          "evidence": "programmatic: sampling/throttling term not found"
+        },
+        {
+          "text": "promotion-notes.md explicitly mentions the first-run 30-day scan (initial noise burst) or schedules a dated post-deploy review",
+          "passed": true,
+          "evidence": "programmatic: first-run/30-day term found"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "review-and-fix-flawed-query",
+      "eval_name": "review-and-fix-flawed-query",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 8,
+        "failed": 0,
+        "total": 8,
+        "time_seconds": 132.3,
+        "tokens": 72997,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "review.md identifies the join without kind= (default innerunique dedup) as a problem",
+          "passed": true,
+          "evidence": "review.md #9: \"Default `join` kind is `innerunique` \u2014 it de-duplicates the left side on `DeviceId` arbitrarily, silently discarding process events\". Names the default-kind dedup problem (and #8 covers the inner-join drop)."
+        },
+        {
+          "text": "review.md identifies that TimeGenerated is the wrong time column for a Defender XDR (Advanced Hunting) query and/or that the Timestamp/TimeGenerated > ago(1h) filter on the recent window is wrong for an hourly custom detection",
+          "passed": true,
+          "evidence": "review.md #1: \"`TimeGenerated` does not exist in Defender XDR advanced hunting \u2014 `DeviceProcessEvents` uses `Timestamp`...\"; #10: \"Explicit `ago(1h)` window is wrong for a scheduled custom detection \u2014 the platform scopes the lookback for the chosen frequency ... hard-coding 1 h creates gaps whenever a run is delayed\". Both halves identified."
+        },
+        {
+          "text": "review.md identifies the full command-line string literals as brittle (argument order/quoting) and/or the 2\u20133 character has_any terms as unindexed/noisy",
+          "passed": true,
+          "evidence": "review.md #5: \"Full-string command signatures are brittle \u2014 `vssadmin.exe delete shadows /all /quiet` only matches if the operator typed `.exe`, used that exact flag order and included `/quiet`\"; #13: \"`ProcessCommandLine has_any (\"-e\", \"-enc\", \"del\")` is unrelated and overly broad\" (the stated mechanism \u2014 that `-e` matches 'the term e' \u2014 is imprecise, but the noisy/broad finding is made). Both halves identified."
+        },
+        {
+          "text": "review.md identifies the case-sensitive FileName == comparisons",
+          "passed": true,
+          "evidence": "review.md #11: \"Case-sensitive `FileName ==` \u2014 Windows process names vary in case (`VSSADMIN.EXE`, `WMIC.exe`); `==` is case-sensitive, so use `=~` / `in~`.\""
+        },
+        {
+          "text": "review.md identifies the positional index parse_json(AdditionalFields)[1].value as brittle",
+          "passed": true,
+          "evidence": "review.md #16: \"`parse_json(AdditionalFields)[1].value` is wrong and unused \u2014 `AdditionalFields` is a JSON object, not an array, so `[1]` returns null; the parent process is already in `InitiatingProcessFileName`...\""
+        },
+        {
+          "text": "review.md identifies that summarizing by DeviceName drops DeviceId and/or that the required Timestamp and ReportId columns are missing from the output",
+          "passed": true,
+          "evidence": "review.md #3: \"Output lacks the mandatory custom-detection columns \u2014 the `summarize` drops `Timestamp`, `DeviceId` and `ReportId`\"; #18: \"Grouping by `DeviceName` instead of `DeviceId` \u2014 `DeviceName` is not unique/stable ... `DeviceId` is the entity key XDR uses\". Both halves identified."
+        },
+        {
+          "text": "fixed.kql projects Timestamp, ReportId and DeviceId, every join states kind=, and every make_set/make_list is capped",
+          "passed": true,
+          "evidence": "Verified by reading fixed.kql (auto-grade agrees): final `| project Timestamp, DeviceId, DeviceName, ReportId, ...`. No `join` and no `make_set`/`make_list` at all, so the kind= and cap clauses are satisfied vacuously (0 joins, 0 make_set/list). Passed on the literal assertion; see eval_feedback on vacuity."
+        },
+        {
+          "text": "fixed.kql produces 0 errors and 0 warnings from the skill's scripts/kql_lint.py --platform xdr (programmatic check)",
+          "passed": true,
+          "evidence": "Ran `python3 -I .../kql_lint.py --platform xdr C/fixed.kql`; final summary line: \"-- 0 error(s), 0 warning(s)\". One I014 info line (no time bound) is emitted, which is informational and not counted as a warning. Matches auto-grade."
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "sentinel-password-spray-rule",
+      "eval_name": "sentinel-password-spray-rule",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.667,
+        "passed": 6,
+        "failed": 3,
+        "total": 9,
+        "time_seconds": 233.2,
+        "tokens": 80554,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "rule.yaml has queryPeriod strictly longer than queryFrequency (no zero-overlap 1h/1h window) or the query selects the run window on ingestion_time()",
+          "passed": true,
+          "evidence": "queryFrequency: 1h (line 25), queryPeriod: 2h (line 26); 2h > 1h so consecutive runs overlap by 1h. ingestion_time() is not used."
+        },
+        {
+          "text": "The query handles ingestion delay explicitly: it uses ingestion_time() or declares a delay/wait window (e.g. let query_wait / ingestion_delay) that is added to the scan window",
+          "passed": false,
+          "evidence": "No ingestion_time() anywhere in the query and no delay/wait let variable (the only lets are MinTargetedUsers, MinFailedSignIns, MinFailedUserShare, AllowedSourceIPs and the two code lists, lines 38-49). The query relies entirely on Sentinel's implicit queryPeriod filter (comment at lines 35-36: 'Sentinel applies the queryPeriod time filter (2h) automatically; do not add a hard-coded ago() filter here'). The description's rationale for the 2h window is boundary straddling ('so a spray that straddles an hour boundary is not split below threshold', line 16-17), not ingestion delay. The 2h/1h overlap incidentally tolerates up to 1h of lag, but nothing in the rule handles ingestion delay explicitly. Agrees with auto-grade."
+        },
+        {
+          "text": "Result codes are declared in let lists (not scattered inline) and the logic distinguishes MFA/Conditional-Access interrupt codes (e.g. 50074, 50076, 53003, 50158) as credential-valid from true credential failures (50126, 50053)",
+          "passed": true,
+          "evidence": "Line 45 'let PasswordFailureCodes  = dynamic([50126, 50056, 50034, 50053, 50057, 50064]);' and line 49 'let PasswordAcceptedCodes = dynamic([0, 50055, 50144, 50074, 50076, 50079, 50072, 53000, 53001, 53003, 50158, 50140]);'. Lines 53-55 'extend ErrorCode = toint(ResultType)' then 'IsPasswordFailure = ErrorCode in (PasswordFailureCodes), IsPasswordAccepted = ErrorCode in (PasswordAcceptedCodes)'; the two flags drive separate countif/dcountif/make_set_if aggregates (lines 61-67) and accepted hits raise severity to High (line 79). 50074, 50076, 53003 and 50158 are all on the credential-valid side; 50126 and 50053 on the failure side."
+        },
+        {
+          "text": "The query aggregates by source IPAddress with a distinct count of user principals (dcount) and the threshold(s) are declared in let statements",
+          "passed": true,
+          "evidence": "Line 62 'TargetedUserCount = dcountif(User, IsPasswordFailure, 4)' (User = tolower(UserPrincipalName), line 57) in a summarize 'by IPAddress' (line 74). Thresholds declared in lets: 'let MinTargetedUsers = 10;' (line 38), 'let MinFailedSignIns = 15;' (line 39), 'let MinFailedUserShare = 0.7;' (line 40), applied at lines 75 and 78."
+        },
+        {
+          "text": "entityMappings contains an IP entity whose columnName appears, with identical casing, in the final projection of the query",
+          "passed": true,
+          "evidence": "entityMappings IP/Address columnName: IPAddress (lines 85-88). The query has no explicit final project; the output schema is the summarize-by-IPAddress result (line 74) plus extends, with only TrustedNamedLocationSignIns removed via project-away (line 81), so 'IPAddress' (exact case) is in the final output."
+        },
+        {
+          "text": "Every make_set / make_list call in the query includes a size cap argument",
+          "passed": true,
+          "evidence": "8 make_set/make_set_if calls, all capped: make_set_if(User, IsPasswordFailure, 20), make_set_if(User, IsPasswordAccepted, 20), make_set_if(ErrorCode, IsPasswordFailure, 10), make_set_if(ErrorCode, IsPasswordAccepted, 10) (lines 64-67), make_set(ClientAppUsed,10), make_set(AppDisplayName,10), make_set(UserAgent,5), make_set(Location,5) (lines 68-71). Zero uncapped; no make_list calls."
+        },
+        {
+          "text": "tactics includes CredentialAccess and relevantTechniques includes T1110.003",
+          "passed": false,
+          "evidence": "tactics includes CredentialAccess (lines 29-30) but relevantTechniques is '- T1110' (line 32), the parent Brute Force technique, not the password-spraying sub-technique T1110.003. The description text names 'Password spray' and the rule is clearly T1110.003, so this is a metadata gap. Agrees with auto-grade."
+        },
+        {
+          "text": "rule.yaml includes incident grouping or suppression settings (incidentConfiguration.groupingConfiguration or suppressionDuration) or alert enrichment (customDetails / alertDetailsOverride)",
+          "passed": true,
+          "evidence": "incidentConfiguration.groupingConfiguration enabled, lookbackDuration 6h, groupByEntities [IP] (lines 113-123); customDetails with 17 keys (lines 89-106); alertDetailsOverride with display name, description and alertSeverityColumnName: Severity (lines 107-110)."
+        },
+        {
+          "text": "The query selects the hourly run window on ingestion_time() (the documented no-gap/no-duplicate form), not merely a declared delay variable used as a recency guard",
+          "passed": false,
+          "evidence": "programmatic: ingestion_time() run-window filter absent"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "threat-report-to-hunt-pack",
+      "eval_name": "threat-report-to-hunt-pack",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.73,
+        "passed": 8,
+        "failed": 3,
+        "total": 11,
+        "time_seconds": 334.7,
+        "tokens": 91025,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "hunts.md separates indicator-based queries (domains, IP, hash) from behaviour-based queries and labels which is which",
+          "passed": true,
+          "evidence": "H01 is headed 'IOC sweep across all XDR device tables' with 'Detection potential: LOW / IOC-only'; the legend defines 'LOW / IOC-only \u2014 hunt now, then push to indicators'. Sub-queries are labelled '5a - exact IOC plus any file in that folder' vs '5b - generic', '6a - connections to IOC infrastructure' vs '6d - behavioural'; H02 is called 'the report's strongest behavioural signal'; the promotion matrix groups 'H01, H03, H05a, H05c, H06a-c, H07a-d, H08 | Hash / domains / IP / task name / path'. Separation is per query rather than by section, but every query is labelled."
+        },
+        {
+          "text": "No behaviour query matches the full sample command line verbatim or relies solely on sample-specific strings (the task name 'OneDrive Sync Health', 'upd.exe', the fictional hash) \u2014 behaviour queries anchor on the process (conhost/powershell/schtasks via FileName) and a few invariant tokens such as --headless, irm/iex, /create with an AppData\\Roaming path",
+          "passed": true,
+          "evidence": "H02: 'InitiatingProcessFileName =~ \"conhost.exe\" and InitiatingProcessCommandLine has \"--headless\"', 'FileName in~ (\"powershell.exe\", \"pwsh.exe\", ...)', HasCradle on irm/iwr/iex/downloadstring tokens. H04a: 'FileName =~ \"schtasks.exe\" and ProcessCommandLine has_any (\"/create\", \"/change\")' with '\\AppData\\Roaming\\' regex; the task name is an additive 'or ... has ioc_taskname', not the sole anchor. H05b/H09 are generic (script host writes PE into Roaming; chained signals). 'FileName =~ \"upd.exe\"' appears only in 5a/5c, which are labelled IOC/'covered by indicators'."
+        },
+        {
+          "text": "IOC values are declared once (let dynamic list or externaldata) and bound to appropriate columns and operators: domains with has_any on RemoteUrl/Url-type columns, the IP with in/== on RemoteIP",
+          "passed": false,
+          "evidence": "Override of auto-grade (which only checked that lets exist). The shared block declares 'let ioc_domains = dynamic([...]); let ioc_ips = dynamic([\"203.0.113.45\"]);' and H06a binds them correctly ('RemoteIP in (ioc_ips) or RemoteUrl has_any (ioc_domains)'), but the same values are re-typed as literals in three queries: 6b line 366 'Answers has \"203.0.113.45\"' (ioc_ips not declared in that block), 7b lines 436/447/448/455 '_Im_WebSession(... url_has_any=dynamic([\"cdn-updates-check.com\", \"telemetry-sync-cloud.net\"]))', '_Im_Dns(... response_has_any_prefix=dynamic([\"203.0.113.45\"]))', and 7c line 465 'Name has_any (\"cdn-updates-check.com\", \"telemetry-sync-cloud.net\") or IPAddresses has \"203.0.113.45\"'. The pack's own rotation advice ('replace the let ioc_* = dynamic([...]) lines with _GetWatchlist') would therefore miss three queries. 'Declared once' is not met."
+        },
+        {
+          "text": "hunts.md includes a query over the vendor's own alerts (AlertInfo/AlertEvidence or SecurityAlert) for this campaign",
+          "passed": true,
+          "evidence": "H01 second block: 'AlertEvidence | where ... SHA256 in (ioc_sha256) or RemoteIP in (ioc_ips) or RemoteUrl has_any (ioc_domains) or FolderPath has @\"\\AppData\\Roaming\\msbuild\\\" | join kind=inner (AlertInfo | project AlertId, Title, Severity, Category, DetectionSource) on AlertId' under 'Also check whether Defender already alerted on any of it'."
+        },
+        {
+          "text": "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
+          "passed": false,
+          "evidence": "MITRE lines exist for H01 (T1105, T1053.005, T1071.001), H02 (T1204.004, T1059.001, T1105, T1564.003), H04 (T1053.005, T1036.004), H05 (T1105, T1036.005), H06 and H07 (T1071.001, T1041). But H03 ('Any download cradle hitting the reported infrastructure'), H08 (delivery/URL clicks), H09 ('Chained signals per device' \u2014 the pack's self-declared best rule candidate) and H10 (credential-store copies, risky sign-ins) have Hypothesis/Tables lines and no MITRE mapping at all. Four of ten hunts, including behaviour hunts, carry no mapping."
+        },
+        {
+          "text": "hunts.md states for each query (or group) whether it is a detection candidate or hunt-only, with a reason tied to expected noise or precision",
+          "passed": true,
+          "evidence": "Every hunt ends with a 'Detection potential' line with a reason: H01 'LOW / IOC-only ... do not build a KQL rule around values that will rotate'; H02 'HIGH ... FPs there are rare'; H04 'MEDIUM -> HIGH after baseline'; H05 '5a LOW / IOC-only; 5b MEDIUM (good as a scheduled custom detection with GlobalPrevalence < 10 and a signer allow-list)'; H06 '6d MEDIUM: viable ... once an allow-list of signed/high-prevalence paths exists'; H09 'HIGH ... best rule candidate'. Section 11 matrix repeats this with 'Tuning needed before go-live'."
+        },
+        {
+          "text": "hunts.md recommends validating the behaviour queries against the report's sample command lines (lab/test fixture) or explicitly marks queries as untested",
+          "passed": true,
+          "evidence": "Top of file: 'they have not been executed against a tenant, so expect to adjust a column name or two on first run'; section 13: 'No tenant access was available while writing this pack, so no query has been executed'. No fixture built from the sample command lines is provided, but the explicit 'untested' marking satisfies the assertion's second clause."
+        },
+        {
+          "text": "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)",
+          "passed": true,
+          "evidence": "Override of auto-grade. It flagged one unbounded block, the 'Shared IOC block' at line 24, which contains only let statements (no table reference) and is not a query; it also carries 'let lookback = 30d;'. Every real query is bounded: 'Timestamp > ago(lookback)' (H01-H06, H08-H10a), 'TimeGenerated > ago(90d)' (H04c, H07a, 7c, 7d), '_Im_*(starttime=ago(90d), endtime=now())' (7b), 'ago(14d)' (H10b), 'ago(30d)' (baseline). Verified by independent fence extraction: 27/27 table-bearing blocks bounded."
+        },
+        {
+          "text": "Every join in every query states an explicit kind= (no bare join) and every make_set/make_list is capped \u2014 check by running: python3 -I /home/user/RootkitResearch/skills/sentinel-fp-workflow/scripts/kql_lint.py --hunt <run>/hunts.md and reporting any E001 or W005 lines (quote the summary line as evidence; other codes do not count for this assertion)",
+          "passed": false,
+          "evidence": "kql_lint.py --hunt B/hunts.md summary line: '-- 0 error(s), 9 warning(s)'. W005 lines: 'hunts.md#L342[H06 ...]:350: W005 warn: unbounded make_set()' (H06a 'Actions = make_set(ActionType), Ports = make_set(RemotePort)') and 'hunts.md#L529[H09 ...]:559: W005 warn: unbounded make_set()' (H09 'Signals = make_set(Signal)'). No E001 (both joins are 'join kind=inner'). Two uncapped make_set calls fail the assertion; the other seven warnings (W006, W014) do not count."
+        },
+        {
+          "text": "At least one behaviour query that is proposed as a detection candidate already carries the XDR required columns (Timestamp, ReportId, DeviceId) in its output or the promotion notes state they must be added",
+          "passed": true,
+          "evidence": "H02 first query (matrix: 'XDR custom detection ... Yes, first') projects 'Timestamp, DeviceName, AccountName, FromRunDialog, ..., DeviceId, ReportId'. Section 11 notes: 'XDR custom detections on device tables must project Timestamp, DeviceId, ReportId; the queries above already carry them (drop the summarize steps or re-add those columns after aggregation).' (H09's summarize output lacks Timestamp/ReportId; the note covers it.)"
+        },
+        {
+          "text": "hunts.md names at least one tenant precondition that would make an empty result untrustworthy (e.g. the DnsQueryResponse/HttpConnectionInspected inspection events, ScheduledTaskCreated ActionType availability, RunMRU registry coverage, SecurityEvent 4698 auditing, MDE network sampling)",
+          "passed": true,
+          "evidence": "Section 13: 'DnsConnectionInspected / HttpConnectionInspected events and their AdditionalFields keys depend on MDE network-inspection being active'; 'RunMRU registry collection by MDE is not guaranteed'; 'Sentinel 4698 coverage requires the \"Other Object Access Events\" audit subcategory'; H02 note: 'if it never returns rows even for ordinary Run usage on a test box, the key is not collected'. Also 'The User-Agent and /api/upload hunts assume TLS inspection at the proxy'."
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": "xdr-first-seen-lsass-access",
+      "eval_name": "xdr-first-seen-lsass-access",
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.7,
+        "passed": 7,
+        "failed": 3,
+        "total": 10,
+        "time_seconds": 352.2,
+        "tokens": 88136,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "detection.kql projects Timestamp, ReportId and DeviceId in its final output (XDR required columns), recovered via arg_max/arg_min after any summarize",
+          "passed": true,
+          "evidence": "Line 82 `summarize arg_min(Timestamp, *), ... by ProcessKey` recovers the earliest row's columns under their original names; line 93 `project Timestamp, ReportId, DeviceId, DeviceName, ...`. Note the grain is one row per ProcessKey fleet-wide, so DeviceId is that of the earliest device only (documented, rule.md line 28-31)."
+        },
+        {
+          "text": "detection.kql computes the 'seen before' baseline from a window that ends before the recent window starts (a guard gap such as between(ago(30d)..ago(1d)) vs > ago(1d)), not an overlapping window",
+          "passed": true,
+          "evidence": "Lines 63-66 baseline `known_processes = lsass_access | where Timestamp <= ago(detection_window) | distinct ProcessKey`; line 70 recent `| where Timestamp > ago(detection_window)` (4h). Disjoint, adjacent windows on the same clock with the baseline ending where the recent half starts, which is exactly the shape of the assertion's own example (between(..ago(1d)) vs > ago(1d)). No overlap, no self-whitelisting. There is no extra margin beyond the boundary."
+        },
+        {
+          "text": "Every join in detection.kql states an explicit kind= (or the comparison uses !in / leftanti anti-join); there is no bare join",
+          "passed": true,
+          "evidence": "Single join, explicit: line 71 `| join kind=leftanti known_processes on ProcessKey`. No bare join."
+        },
+        {
+          "text": "detection.kql does not restrict the recent-window rows with a Timestamp filter of 4h or less (XDR evaluates the lookback on ingestion_time); any explicit Timestamp bound applies only to the baseline half",
+          "passed": false,
+          "evidence": "OVERRIDE of auto-grade (which only pattern-matched a literal '> ago(4h)'). Line 17 `let detection_window = 4h;` and line 70 `| where Timestamp > ago(detection_window)` restrict the recent-window rows with a Timestamp filter of exactly 4h. Because XDR evaluates the lookback on ingestion_time(), a late-arriving event (Timestamp older than 4h, ingested now) is excluded from the recent half and instead falls into known_processes via line 65, so it can never fire and additionally whitelists its key. rule.md line 142-144 acknowledges the miss but misattributes it to the platform ('Hourly rules only evaluate events whose Timestamp falls in the last 4h'), which is incorrect; the filter is the query's own."
+        },
+        {
+          "text": "lsass.exe and other file-name comparisons in detection.kql are case-insensitive (=~, in~, has) and the first-seen key includes a process identity stronger than the display name alone (SHA1/SHA256/signer or FolderPath)",
+          "passed": true,
+          "evidence": "`FileName =~ \"lsass.exe\"` (line 43), `FolderPath =~ @\"C:\\Windows\\System32\\lsass.exe\"` (line 45), allowlist via `in~` (line 79). Key = NormalizedPath derived from tolower(InitiatingProcessFolderPath) (lines 48-55), or InitiatingProcessSHA256 when baseline_on_hash; both stronger than the display name."
+        },
+        {
+          "text": "Tunables (baseline length, gap, any threshold) are declared in let statements at the top of detection.kql rather than inline literals",
+          "passed": true,
+          "evidence": "Lines 16-36: baseline_window, detection_window, baseline_on_hash, require_sensitive_access, rollout_device_threshold, allowlist_exact, allowlist_regex, sensitive_bits, generic_bits all declared as `let` under a 'TUNING KNOBS' header before any tabular expression (11 lets). Remaining inline numbers are make_set caps (10), output shaping not tuning."
+        },
+        {
+          "text": "rule.md maps the detection to MITRE ATT&CK T1003.001 (OS Credential Dumping: LSASS Memory)",
+          "passed": true,
+          "evidence": "rule.md line 45: 'Credential Access (TA0006) | **T1003.001** OS Credential Dumping: LSASS Memory | Primary'; also kql header line 7 and rule.md line 49-50 on setting Category/Technique in the portal."
+        },
+        {
+          "text": "rule.md names at least one concrete blind spot or evasion (e.g. parent-PID spoofing, a tool seen once during the baseline, baseline poisoning, slow attacker) and at least one named benign source of lsass access (AV/EDR, backup, monitoring agents)",
+          "passed": true,
+          "evidence": "Blind spots (rule.md lines 104-146): 'Known-process abuse ... taskmgr.exe, rundll32 comsvcs.dll MiniDump', 'Masquerading at a baselined path', 'Mass campaigns above rollout_device_threshold', 'Baseline poisoning. If an attacker was already dumping lsass with the same tool during the previous 30 days', 'Late-arriving telemetry'. Benign sources (lines 87-98): 'Security/EDR/AV agent upgrades (Defender Platform ... Tanium, Rapid7, Qualys, CrowdStrike)', 'monitoring agents: Zabbix, Datadog, SolarWinds, Splunk UF; backup agents; vulnerability scanners'."
+        },
+        {
+          "text": "The baseline window ends a stated guard margin before the recent window begins (e.g. baseline ends at ago(lookback + margin)), not merely at the adjacent 4 h boundary",
+          "passed": false,
+          "evidence": "manual (from blind-grader evidence + file check): baseline `Timestamp <= ago(detection_window)` vs recent `Timestamp > ago(detection_window)` \u2014 adjacent boundary, no margin"
+        },
+        {
+          "text": "rule.md describes the hourly rule's lookback as evaluated on ingestion time and does not claim that only events with Timestamp in the last 4 h are evaluated",
+          "passed": false,
+          "evidence": "manual (from blind-grader evidence + file check): rule.md line 74 treats `detection_window = 4h` on Timestamp as 'must match the XDR lookback'; the grader notes it states that hourly rules only evaluate events whose Timestamp falls in the last 4 h, which is incorrect"
+        }
+      ],
+      "notes": []
+    }
+  ],
+  "run_summary": {
+    "with_skill": {
+      "pass_rate": {
+        "mean": 1.0,
+        "stddev": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "time_seconds": {
+        "mean": 478.2,
+        "stddev": 225.916,
+        "min": 248.2,
+        "max": 853.2
+      },
+      "tokens": {
+        "mean": 153364.0,
+        "stddev": 23800.553,
+        "min": 118481,
+        "max": 178085
+      }
+    },
+    "old_skill": {
+      "pass_rate": {
+        "mean": 0.9232,
+        "stddev": 0.0442,
+        "min": 0.889,
+        "max": 1.0
+      },
+      "time_seconds": {
+        "mean": 360.9,
+        "stddev": 38.927,
+        "min": 305.3,
+        "max": 400.2
+      },
+      "tokens": {
+        "mean": 110815.2,
+        "stddev": 16854.7167,
+        "min": 98801,
+        "max": 140064
+      }
+    },
+    "without_skill": {
+      "pass_rate": {
+        "mean": 0.7694,
+        "stddev": 0.1327,
+        "min": 0.667,
+        "max": 1.0
+      },
+      "time_seconds": {
+        "mean": 245.32,
+        "stddev": 96.6832,
+        "min": 132.3,
+        "max": 352.2
+      },
+      "tokens": {
+        "mean": 82167.0,
+        "stddev": 7367.797,
+        "min": 72997,
+        "max": 91025
+      }
+    },
+    "delta": {
+      "pass_rate": "+0.08",
+      "time_seconds": "+117.3",
+      "tokens": "+42549"
+    }
+  },
+  "notes": [
+    "Three configurations: with_skill (updated skill) 100.0%, old_skill (original synced skill) 92.3%, without_skill (no skill) 76.9% mean pass rate over 5 cases (one run each). Delta new vs none: +23.1 points; new vs old: +7.7 points. The table's Delta column compares with_skill to old_skill only.",
+    "Single run per configuration: no variance estimate per case. Treat differences of one assertion as suggestive, not conclusive.",
+    "review-and-fix-flawed-query does not discriminate: all three configurations scored 8/8 (the base model reviews flawed KQL well). A fixture-based 'TP still fires' check would be needed to separate them.",
+    "The original 8 assertions per case were mostly OR-lists and let a no-skill run pass while keeping a self-inflicted `Timestamp > ago(4h)` filter (promote-hunt) or claiming hourly XDR rules only see Timestamps in the last 4 h (lsass). Stricter assertions (programmatic or grader-evidenced) were added after the blind graders' critique: +4 (promote-hunt), +2 (lsass), +1 (spray), +3 (hunt-pack). These are where most of the separation comes from.",
+    "Where the no-skill runs lost points: XDR lookback/ingestion-time semantics (self-inflicted Timestamp filters, missing ingestion_time() run window, misstated platform facts), omission of the 150-alerts/run cap and MDE network sampling, IOCs re-typed inline instead of one hoisted list, missing MITRE mapping on some hunts, sub-technique T1110 vs T1110.003, unbounded make_set.",
+    "Where the old skill lost points vs the new one: guard margin between baseline and recent windows (lsass), ingestion_time() run window instead of a recency-guard variable (spray), MDE sampling/throttling not named (promote-hunt), a detection draft with no time bound and uncapped sets (hunt-pack).",
+    "Cost: the updated skill used ~40% more tokens and ~30% more wall time than the old skill and ~75% more tokens than no skill, mostly from reading more reference files and running kql_lint/test-harness. The hunt-pack with-skill run took 14 min (631-line pack with fixtures).",
+    "Grader bias caveats: assertions were written by the skill's author and some strict checks (kql_lint clean) use the skill's own linter; graders were blind to configuration labels but with-skill outputs are recognisable by their header format. A linter false positive found during grading (scalar `contains` followed by a case() label) was fixed and the affected run regraded; the fix applied equally to all arms.",
+    "Side findings from executors: the inherited xdr_contract pattern duplicated the group-by key when entity_field was DeviceId (fixed); the fictional report hash in the hunt-pack fixture was 65 hex chars (only the old-skill run noticed; fixed in the fixture for the next iteration)."
+  ]
+}

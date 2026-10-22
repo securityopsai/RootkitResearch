@@ -1,0 +1,122 @@
+{
+  "expectations": [
+    {
+      "text": "hunts.md separates indicator-based queries (domains, IP, hash) from behaviour-based queries and labels which is which",
+      "passed": true,
+      "evidence": "Section 1 table carries a 'Tier' column per report step: 'IOC (network)', 'Artefact (static string)', 'IOC (hash)', 'Behaviour'; sections are split as '## 3. Tier 1 — network IOC (fast, brittle)', '## 4. Tier 2 — static artefacts (hash, path)', '## 5. Tier 3 — behaviour (survives infrastructure and hash changes)'; each query header repeats the tier ('H5 - behaviour (tier 3)')."
+    },
+    {
+      "text": "No behaviour query matches the full sample command line verbatim or relies solely on sample-specific strings (the task name 'OneDrive Sync Health', 'upd.exe', the fictional hash) — behaviour queries anchor on the process (conhost/powershell/schtasks via FileName) and a few invariant tokens such as --headless, irm/iex, /create with an AppData\\Roaming path",
+      "passed": true,
+      "evidence": "H5 anchors 'FileName in~ (ShellNames)', 'InitiatingProcessFileName =~ \"conhost.exe\"', 'InitiatingProcessCommandLine has \"headless\"' then matches unordered CradleFetch/CradleExec tokens (irm/iwr/iex...). H7 anchors 'FileName =~ \"schtasks.exe\"', 'Canon has \"create\"', 'Canon has \"Roaming\" or Canon contains \"%APPDATA%\"'. H6 keys on the task action path in TaskContent. The task name is a flag only ('OneDriveLookalike = TaskName has \"OneDrive\"'); IOC table row says 'task name ... not anchored'; H4 states 'the file name is NOT anchored (upd.exe is trivially renamed)'. No query matches the full sample line."
+    },
+    {
+      "text": "IOC values are declared once (let dynamic list or externaldata) and bound to appropriate columns and operators: domains with has_any on RemoteUrl/Url-type columns, the IP with in/== on RemoteIP",
+      "passed": true,
+      "evidence": "Every block declares 'let C2Domains = dynamic([\"cdn-updates-check.com\", \"telemetry-sync-cloud.net\"]); let C2IPs = dynamic([\"203.0.113.45\"]);' (repeated per block by stated design, 'one block at a time') and binds them 'RemoteUrl has_any (C2Domains) or RemoteIP in (C2IPs)' (H1), 'RemoteUrl has_any (C2Domains) or RemoteIP in (C2IPs) or SHA256 in~ (PayloadSHA256)' (H10), 'DestinationIP in (C2IPs) ... RequestURL has_any (C2Domains)' (S1). No IOC literal appears outside a let. Auto-grade agreed."
+    },
+    {
+      "text": "hunts.md includes a query over the vendor's own alerts (AlertInfo/AlertEvidence or SecurityAlert) for this campaign",
+      "passed": true,
+      "evidence": "H10 'Defender's own alerts touching this campaign' queries AlertInfo joined to AlertEvidence with IOC and 'headless'/'Roaming','msbuild' evidence predicates; S2 queries SecurityAlert with 'AlertName has_any (AlertTitleTerms) or Entities has_any (C2Domains)...'."
+    },
+    {
+      "text": "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
+      "passed": true,
+      "evidence": "Section 1 'MITRE mapping' table maps every query: H1/S1 T1071.001, H2 T1041, H3 T1105, H4 T1105+T1036.005, H5/D1 T1059.001+T1105+T1564.003 (context T1204.004), H6/H7 T1053.005, H8 T1071.001, H9 T1204.004; H10/S2 marked '— (vendor alerts carry their own mapping)' with a reason, not a placeholder. D1 header repeats 'MITRE: T1059.001, T1105, T1564.003 (context T1204.004)'."
+    },
+    {
+      "text": "hunts.md states for each query (or group) whether it is a detection candidate or hunt-only, with a reason tied to expected noise or precision",
+      "passed": true,
+      "evidence": "Section 9 table gives Promote? per query with a noise/precision reason: 'H1 network IOC | No — indicator store ... rotated infra', 'H5 headless conhost cradle | Yes, strongest candidate', 'H6 ... Yes, after tuning ... two weeks of hunt output to seed the allow-list; first-run noise burst', 'H8 ... Not yet — hunt only ... promotion needs a persisted destination baseline', 'H9 RunMRU | Maybe ... only if the preflight shows RunMRU coverage'. Each query header also carries 'FP rate label: Low/Medium/High'."
+    },
+    {
+      "text": "hunts.md recommends validating the behaviour queries against the report's sample command lines (lab/test fixture) or explicitly marks queries as untested",
+      "passed": true,
+      "evidence": "Every query header states 'UNTESTED - derived from report, no sample run'. Section 8 'TP fixtures — the report's own samples' supplies datatable fixtures F1 (conhost --headless sample refanged, plus benign and gap rows with expected outcomes) and F2 (schtasks sample) and instructs 'Run each fixture today ... paste the fixture's let block above the target query'; section 10: 'Re-run fixtures F1/F2 after any edit: the TP row must still fire.'"
+    },
+    {
+      "text": "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)",
+      "passed": true,
+      "evidence": "Auto-grade: '17 query block(s); unbounded: 0'. Verified: preflight 'Timestamp > ago(7d)', H1-H10 'Timestamp > ago(TimeFrame)' with 'let TimeFrame = 30d;', S1/S2 'TimeGenerated > ago(TimeFrame)' (90d), S1b '_Im_Dns(starttime = ago(TimeFrame)...)', D1 'ingestion_time() > ago(4h)'. F1/F2 are datatable fixtures, not table queries."
+    },
+    {
+      "text": "Every join in every query states an explicit kind= (no bare join) and every make_set/make_list is capped — check by running: python3 -I /home/user/RootkitResearch/skills/sentinel-fp-workflow/scripts/kql_lint.py --hunt <run>/hunts.md and reporting any E001 or W005 lines (quote the summary line as evidence; other codes do not count for this assertion)",
+      "passed": true,
+      "evidence": "kql_lint.py --hunt A/hunts.md summary line: '-- 0 error(s), 0 warning(s)'. No E001 or W005 lines. Joins in H2 and H10 are 'join kind=leftouter'; every make_set is capped (e.g. 'make_set(ActionType, 10)')."
+    },
+    {
+      "text": "At least one behaviour query that is proposed as a detection candidate already carries the XDR required columns (Timestamp, ReportId, DeviceId) in its output or the promotion notes state they must be added",
+      "passed": true,
+      "evidence": "H5 (the 'strongest candidate') projects 'Timestamp, DeviceName, AccountName, ... DeviceId, ReportId'; D1 recovers them after aggregation: 'summarize (Timestamp, ReportId) = arg_min(Timestamp, ReportId) ... by DeviceId, DeviceName, AccountSid, AccountName, InitiatingProcessId | project Timestamp, ReportId, DeviceId, ...'."
+    },
+    {
+      "text": "hunts.md names at least one tenant precondition that would make an empty result untrustworthy (e.g. the DnsQueryResponse/HttpConnectionInspected inspection events, ScheduledTaskCreated ActionType availability, RunMRU registry coverage, SecurityEvent 4698 auditing, MDE network sampling)",
+      "passed": true,
+      "evidence": "Section 2 'Preflight — know your data': 'Three of the queries depend on sub-event types that are not present in every tenant. A zero here means \"no telemetry\", not \"no attack\"' and checks DeviceEvents.ScheduledTaskCreated, HttpConnectionInspected, DnsQueryResponse and RunMRU, with verdict text 'NOT SEEN in 7d - treat that query's zero rows as no coverage'. H1 DATA line: 'sampled: yes (MDE throttles network logging)'."
+    }
+  ],
+  "summary": {
+    "passed": 11,
+    "failed": 0,
+    "total": 11,
+    "pass_rate": 1.0
+  },
+  "claims": [
+    {
+      "claim": "KQL blocks are plausibly valid Advanced Hunting KQL",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Lint: 0 errors (balanced fences/parentheses). Column names are real (ProcessCommandLine, InitiatingProcessCommandLine, InitiatingProcessFolderPath, RemoteUrl, RemoteIPType, AdditionalFields, AlertEvidence.RemoteUrl, CommonSecurityLog.RequestClientApplication). Join bookkeeping is correct (project-away DeviceId1... after multi-key join in H2; AlertId1 in H10). One unverified minor risk: H6/H7 use max() over bool columns (LogonTrigger/OneDriveLookalike); if the engine rejects bool in max(), wrap in toint()."
+    },
+    {
+      "claim": "Pack is usable today: clear run order, no placeholders left unfilled",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Section 2 gives an explicit order 'preflight → H10 → H1 → H3 → H5 → H4 → H6 → H7 → H9 → H2 → H8'. Every block is self-contained (repeats its let lines). '<user>' tokens are normalisation strings marked 'lint:ignore W014'; only '[ORG]' appears, inside a D1 comment. Fixtures let the two behaviour queries be exercised with zero tenant data."
+    },
+    {
+      "claim": "H3 hash sweep will match the report's payload (header: 'any row is an incident'; comment 'lower-case; MDE stores hashes lower-case')",
+      "type": "factual",
+      "verified": false,
+      "evidence": "The report hash is 65 hex characters (wc -c = 65), not a valid SHA256, so 'SHA256 in~ (PayloadSHA256)' in H3/H10/S2 can never match. The pack did not notice; run C did."
+    },
+    {
+      "claim": "D1 is 'lint clean'",
+      "type": "process",
+      "verified": true,
+      "evidence": "kql_lint.py reports 0 errors, 0 warnings for the whole file."
+    },
+    {
+      "claim": "Fixture F1 expectations (TP row fires with Score 3; benign and gap rows do not) hold against H5",
+      "type": "factual",
+      "verified": true,
+      "evidence": "Traced by hand: row 1 passes FileName/conhost/headless filters, HasFetch (irm) + HasExec (iex) + 'hidden' => Score 3; row 2 has no CradleFetch token and is not encoded => dropped by 'where HasFetch or IsEncoded'; row 3 has InitiatingProcessFileName explorer.exe => dropped by the conhost anchor."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)",
+        "reason": "The machine pre-grade treats every ```kql fence as a query, so a let-only IOC block (B, C) counts as 'unbounded', and its fence tracking breaks on the ```yaml block in C (it reported a block starting '--- ## 4.'). More importantly the assertion has no stated position on XDR custom-detection drafts, which legitimately omit a Timestamp filter because the platform owns the lookback: A satisfied it with ingestion_time() > ago(4h), C omitted the bound and explained why. State whether a detection draft must still carry ago()/ingestion_time() or is exempt."
+      },
+      {
+        "reason": "The report's SHA256 is 65 hex characters (verified with wc -c), so any hash sweep built from it can never match. Only run C noticed; A and B shipped hash clauses and A even annotated it 'MDE stores hashes lower-case'. If the malformed hash is deliberate, add an assertion for noticing it; if accidental, fix the fixture, because it silently invalidates the hash IOC in every pack."
+      },
+      {
+        "assertion": "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
+        "reason": "'Each query' cannot be met literally by a vendor-alert sweep (AlertEvidence/SecurityAlert) or a preflight/coverage query; A and C mark those with a dash and a reason. Clarify that hunt queries over raw telemetry need a mapping and alert/preflight queries are exempt, otherwise graders will split on it."
+      },
+      {
+        "assertion": "hunts.md separates indicator-based queries (domains, IP, hash) from behaviour-based queries and labels which is which",
+        "reason": "Any pack that writes the word 'IOC' next to one query passes. A more discriminating form: every query that filters on a report-supplied literal (domain, IP, hash, task name, file name) is labelled indicator/artefact, and no query labelled behaviour filters on one of those literals except as an additive flag."
+      }
+    ],
+    "overall": "Run A passes all 11. The assertions are mostly discriminating, but assertion 8 needs a stated rule for detection drafts and the fixture's malformed hash is an unexamined outcome."
+  }
+}
