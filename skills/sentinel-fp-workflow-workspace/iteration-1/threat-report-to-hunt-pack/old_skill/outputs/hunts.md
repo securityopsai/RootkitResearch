@@ -320,16 +320,16 @@ let roaming_connections =
       RemoteHosts = make_set(RemoteUrl, 15), RemoteIPs = make_set(RemoteIP, 15),
       SampleDevice = any(DeviceName), (Timestamp, ReportId) = arg_max(Timestamp, ReportId)
       by InitiatingProcessFileName, InitiatingProcessSHA1
-  | extend IocHit = RemoteIPs has_any (ioc_ips) or RemoteHosts has_any (ioc_domains),
+  | extend IocHit = array_length(set_intersect(RemoteIPs, ioc_ips)) > 0 or tostring(RemoteHosts) has_any (ioc_domains),
       MsbuildMasquerade = InitiatingProcessFileName =~ "upd.exe";
 roaming_connections
 | join kind=leftouter (
     DeviceFileCertificateInfo
     | where Timestamp > ago(lookback)
-    | project SHA1, IsSigned, Signer, IsTrusted
-    | summarize arg_max(IsTrusted, IsSigned, Signer) by SHA1
+    | project Timestamp, SHA1, IsSigned, Signer, IsTrusted
+    | summarize arg_max(Timestamp, IsSigned, Signer, IsTrusted) by SHA1
   ) on $left.InitiatingProcessSHA1 == $right.SHA1
-| project-away SHA1
+| project-away SHA1, Timestamp1
 | order by IocHit desc, Devices asc, IsTrusted asc, ConnCount desc
 ```
 
@@ -555,7 +555,7 @@ Scheduled variant (1 h / 4 h), aggregated to the device + account the analyst in
 let cradle_terms = dynamic(["irm", "iwr", "invoke-webrequest", "invoke-restmethod", "downloadstring",
   "downloadfile", "iex", "invoke-expression", "net.webclient", "start-bitstransfer", "frombase64string"]);
 let shells = dynamic(["powershell.exe", "pwsh.exe", "cmd.exe", "mshta.exe", "curl.exe", "certutil.exe"]);
-let conhost_allowlist = dynamic([]);   // grandparent executables baselined in H1a (e.g. an IDE), empty until proven
+let conhost_allowlist = dynamic([]);   // grandparent executables baselined in H1a (e.g. an IDE); if the tenant rejects an empty list, delete the clause below until it has entries
 DeviceProcessEvents
 | where InitiatingProcessFileName =~ "conhost.exe"
 | where InitiatingProcessCommandLine has "headless"

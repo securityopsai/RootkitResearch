@@ -96,7 +96,7 @@ let RecentOpens =
 
 // Small side (NewKeys) on the left; explicit inner join; both sides already time-bound.
 NewKeys
-| join kind=inner RecentOpens on ProcKey
+| join kind=inner (RecentOpens) on ProcKey
 | project
     // --- required by the XDR platform contract (MDE device table) ---
     Timestamp, ReportId, DeviceId, DeviceName,
