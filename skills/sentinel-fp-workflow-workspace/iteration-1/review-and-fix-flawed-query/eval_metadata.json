@@ -1,0 +1,14 @@
+{
+  "eval_name": "review-and-fix-flawed-query",
+  "prompt": "A colleague wrote this Defender XDR custom detection for shadow-copy deletion (ransomware pre-encryption); it is in flawed.md. Review it: list every problem you find with a one-line reason each in review.md, then produce a corrected version as fixed.kql that I can save as an hourly custom detection.\n\nInput files: flawed.md",
+  "assertions": [
+    "review.md identifies the join without kind= (default innerunique dedup) as a problem",
+    "review.md identifies that TimeGenerated is the wrong time column for a Defender XDR (Advanced Hunting) query and/or that the Timestamp/TimeGenerated > ago(1h) filter on the recent window is wrong for an hourly custom detection",
+    "review.md identifies the full command-line string literals as brittle (argument order/quoting) and/or the 2\u20133 character has_any terms as unindexed/noisy",
+    "review.md identifies the case-sensitive FileName == comparisons",
+    "review.md identifies the positional index parse_json(AdditionalFields)[1].value as brittle",
+    "review.md identifies that summarizing by DeviceName drops DeviceId and/or that the required Timestamp and ReportId columns are missing from the output",
+    "fixed.kql projects Timestamp, ReportId and DeviceId, every join states kind=, and every make_set/make_list is capped",
+    "fixed.kql produces 0 errors and 0 warnings from the skill's scripts/kql_lint.py --platform xdr (programmatic check)"
+  ]
+}

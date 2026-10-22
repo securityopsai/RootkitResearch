@@ -1,0 +1,14 @@
+{
+  "eval_name": "xdr-first-seen-lsass-access",
+  "prompt": "I need a Defender XDR custom detection rule that fires when a process that has never been seen accessing lsass.exe anywhere in our fleet before does so. It should run hourly. Save the KQL as detection.kql and write a short rule document (rule.md) that a reviewer could use: what it detects, MITRE mapping, the tuning knobs, known false positives, and what it would miss.",
+  "assertions": [
+    "detection.kql projects Timestamp, ReportId and DeviceId in its final output (XDR required columns), recovered via arg_max/arg_min after any summarize",
+    "detection.kql computes the 'seen before' baseline from a window that ends before the recent window starts (a guard gap such as between(ago(30d)..ago(1d)) vs > ago(1d)), not an overlapping window",
+    "Every join in detection.kql states an explicit kind= (or the comparison uses !in / leftanti anti-join); there is no bare join",
+    "detection.kql does not restrict the recent-window rows with a Timestamp filter of 4h or less (XDR evaluates the lookback on ingestion_time); any explicit Timestamp bound applies only to the baseline half",
+    "lsass.exe and other file-name comparisons in detection.kql are case-insensitive (=~, in~, has) and the first-seen key includes a process identity stronger than the display name alone (SHA1/SHA256/signer or FolderPath)",
+    "Tunables (baseline length, gap, any threshold) are declared in let statements at the top of detection.kql rather than inline literals",
+    "rule.md maps the detection to MITRE ATT&CK T1003.001 (OS Credential Dumping: LSASS Memory)",
+    "rule.md names at least one concrete blind spot or evasion (e.g. parent-PID spoofing, a tool seen once during the baseline, baseline poisoning, slow attacker) and at least one named benign source of lsass access (AV/EDR, backup, monitoring agents)"
+  ]
+}

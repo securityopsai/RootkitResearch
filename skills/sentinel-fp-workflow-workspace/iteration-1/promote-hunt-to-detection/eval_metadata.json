@@ -1,0 +1,14 @@
+{
+  "eval_name": "promote-hunt-to-detection",
+  "prompt": "This hunting query (hunt.kql) has been useful and we want it as a Defender XDR custom detection running every hour; we will also deploy a Sentinel scheduled rule version later. Convert it: output detection.kql (the XDR version) and a short promotion-notes.md explaining what you changed and why, and what to watch after deployment.\n\nInput files: hunt.kql",
+  "assertions": [
+    "detection.kql replaces the sort by Connections desc ranking with explicit threshold conditions on named let tunables",
+    "detection.kql keeps a population/prevalence filter (Devices <= N or equivalent) together with a minimum connection count, rather than ranking alone",
+    "detection.kql returns Timestamp, ReportId and DeviceId (aggregation per device or arg_max/arg_min recovery), not only per-RemoteIP rows",
+    "Every make_set / make_list call in detection.kql includes a size cap argument",
+    "promotion-notes.md states that an hourly XDR custom detection has a fixed lookback (4 hours) so the hunt's 7-day window cannot be kept as-is, and proposes a concrete resolution (shorter window, a 24h/30d schedule, or a persisted baseline)",
+    "promotion-notes.md addresses alert volume and deduplication (the 150-alerts-per-run cap, platform dedup, or aggregating to one row per device/destination)",
+    "promotion-notes.md names MDE network telemetry sampling/throttling or shared destinations (CDNs, Windows Update, telemetry endpoints) as a source of false negatives/positives",
+    "promotion-notes.md includes a post-deployment check such as the first-run 30-day scan noise burst, an expected volume, or a scheduled review"
+  ]
+}

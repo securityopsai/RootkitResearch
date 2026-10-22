@@ -1,0 +1,5 @@
+{"xdr-first-seen-lsass-access":{"with_skill":"a997cc82879f88ab2","old_skill":"aab087982256988f1","without_skill":"abeddbb4ae6fa42b1"},
+ "sentinel-password-spray-rule":{"with_skill":"a3c44d9eacf5f5399","old_skill":"a20938dfc73caa04e","without_skill":"a81deb755f7bd2668"},
+ "review-and-fix-flawed-query":{"with_skill":"a99b0950850ab8d9a","old_skill":"ad19a129a8788632f","without_skill":"a71b0d66899abc06a"},
+ "threat-report-to-hunt-pack":{"with_skill":"a762df4501e42ba23","old_skill":"a56e63817dd24f305","without_skill":"ac9fd71a7ef2ea781"},
+ "promote-hunt-to-detection":{"with_skill":"acb1b3c16d8aeecc3","old_skill":"a8dcc46542e54ebd7","without_skill":"aaac4674484679554"}}

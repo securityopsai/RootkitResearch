@@ -1,0 +1,14 @@
+{
+  "eval_name": "sentinel-password-spray-rule",
+  "prompt": "Write a Microsoft Sentinel scheduled analytics rule, as a YAML file rule.yaml in the Azure-Sentinel repository format with the KQL inline, that detects password spray against Entra ID from a single source IP using SigninLogs. It should run every hour. Make it something I could deploy without surprises.",
+  "assertions": [
+    "rule.yaml has queryPeriod strictly longer than queryFrequency (no zero-overlap 1h/1h window) or the query selects the run window on ingestion_time()",
+    "The query handles ingestion delay explicitly: it uses ingestion_time() or declares a delay/wait window (e.g. let query_wait / ingestion_delay) that is added to the scan window",
+    "Result codes are declared in let lists (not scattered inline) and the logic distinguishes MFA/Conditional-Access interrupt codes (e.g. 50074, 50076, 53003, 50158) as credential-valid from true credential failures (50126, 50053)",
+    "The query aggregates by source IPAddress with a distinct count of user principals (dcount) and the threshold(s) are declared in let statements",
+    "entityMappings contains an IP entity whose columnName appears, with identical casing, in the final projection of the query",
+    "Every make_set / make_list call in the query includes a size cap argument",
+    "tactics includes CredentialAccess and relevantTechniques includes T1110.003",
+    "rule.yaml includes incident grouping or suppression settings (incidentConfiguration.groupingConfiguration or suppressionDuration) or alert enrichment (customDetails / alertDetailsOverride)"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "eval_name": "threat-report-to-hunt-pack",
+  "prompt": "Here is an excerpt from a threat report we received this morning (report.md). Turn it into hunting queries for our Defender XDR tenant (we also have Sentinel). Put them in hunts.md. I want to be able to run them today and also know which ones could become detections later.\n\nInput files: report.md",
+  "assertions": [
+    "hunts.md separates indicator-based queries (domains, IP, hash) from behaviour-based queries and labels which is which",
+    "No behaviour query matches the full sample command line verbatim or relies solely on sample-specific strings (the task name 'OneDrive Sync Health', 'upd.exe', the fictional hash) \u2014 behaviour queries anchor on the process (conhost/powershell/schtasks via FileName) and a few invariant tokens such as --headless, irm/iex, /create with an AppData\\Roaming path",
+    "IOC values are declared once (let dynamic list or externaldata) and bound to appropriate columns and operators: domains with has_any on RemoteUrl/Url-type columns, the IP with in/== on RemoteIP",
+    "hunts.md includes a query over the vendor's own alerts (AlertInfo/AlertEvidence or SecurityAlert) for this campaign",
+    "Each query carries a MITRE ATT&CK mapping that names the behaviour (e.g. T1204.004 or T1204.002, T1059.001, T1053.005, T1071.001, T1041/T1567), not a generic placeholder",
+    "hunts.md states for each query (or group) whether it is a detection candidate or hunt-only, with a reason tied to expected noise or precision",
+    "hunts.md recommends validating the behaviour queries against the report's sample command lines (lab/test fixture) or explicitly marks queries as untested",
+    "Every KQL query in hunts.md is time-bounded (ago(), between, or Sentinel {{StartTimeISO}} placeholders)"
+  ]
+}
