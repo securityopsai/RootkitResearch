@@ -1,0 +1,105 @@
+{
+  "expectations": [
+    {
+      "text": "rule.yaml has queryPeriod strictly longer than queryFrequency (no zero-overlap 1h/1h window) or the query selects the run window on ingestion_time()",
+      "passed": true,
+      "evidence": "queryFrequency: 1h (line 25), queryPeriod: 2h (line 26); 2h > 1h so consecutive runs overlap by 1h. ingestion_time() is not used."
+    },
+    {
+      "text": "The query handles ingestion delay explicitly: it uses ingestion_time() or declares a delay/wait window (e.g. let query_wait / ingestion_delay) that is added to the scan window",
+      "passed": false,
+      "evidence": "No ingestion_time() anywhere in the query and no delay/wait let variable (the only lets are MinTargetedUsers, MinFailedSignIns, MinFailedUserShare, AllowedSourceIPs and the two code lists, lines 38-49). The query relies entirely on Sentinel's implicit queryPeriod filter (comment at lines 35-36: 'Sentinel applies the queryPeriod time filter (2h) automatically; do not add a hard-coded ago() filter here'). The description's rationale for the 2h window is boundary straddling ('so a spray that straddles an hour boundary is not split below threshold', line 16-17), not ingestion delay. The 2h/1h overlap incidentally tolerates up to 1h of lag, but nothing in the rule handles ingestion delay explicitly. Agrees with auto-grade."
+    },
+    {
+      "text": "Result codes are declared in let lists (not scattered inline) and the logic distinguishes MFA/Conditional-Access interrupt codes (e.g. 50074, 50076, 53003, 50158) as credential-valid from true credential failures (50126, 50053)",
+      "passed": true,
+      "evidence": "Line 45 'let PasswordFailureCodes  = dynamic([50126, 50056, 50034, 50053, 50057, 50064]);' and line 49 'let PasswordAcceptedCodes = dynamic([0, 50055, 50144, 50074, 50076, 50079, 50072, 53000, 53001, 53003, 50158, 50140]);'. Lines 53-55 'extend ErrorCode = toint(ResultType)' then 'IsPasswordFailure = ErrorCode in (PasswordFailureCodes), IsPasswordAccepted = ErrorCode in (PasswordAcceptedCodes)'; the two flags drive separate countif/dcountif/make_set_if aggregates (lines 61-67) and accepted hits raise severity to High (line 79). 50074, 50076, 53003 and 50158 are all on the credential-valid side; 50126 and 50053 on the failure side."
+    },
+    {
+      "text": "The query aggregates by source IPAddress with a distinct count of user principals (dcount) and the threshold(s) are declared in let statements",
+      "passed": true,
+      "evidence": "Line 62 'TargetedUserCount = dcountif(User, IsPasswordFailure, 4)' (User = tolower(UserPrincipalName), line 57) in a summarize 'by IPAddress' (line 74). Thresholds declared in lets: 'let MinTargetedUsers = 10;' (line 38), 'let MinFailedSignIns = 15;' (line 39), 'let MinFailedUserShare = 0.7;' (line 40), applied at lines 75 and 78."
+    },
+    {
+      "text": "entityMappings contains an IP entity whose columnName appears, with identical casing, in the final projection of the query",
+      "passed": true,
+      "evidence": "entityMappings IP/Address columnName: IPAddress (lines 85-88). The query has no explicit final project; the output schema is the summarize-by-IPAddress result (line 74) plus extends, with only TrustedNamedLocationSignIns removed via project-away (line 81), so 'IPAddress' (exact case) is in the final output."
+    },
+    {
+      "text": "Every make_set / make_list call in the query includes a size cap argument",
+      "passed": true,
+      "evidence": "8 make_set/make_set_if calls, all capped: make_set_if(User, IsPasswordFailure, 20), make_set_if(User, IsPasswordAccepted, 20), make_set_if(ErrorCode, IsPasswordFailure, 10), make_set_if(ErrorCode, IsPasswordAccepted, 10) (lines 64-67), make_set(ClientAppUsed,10), make_set(AppDisplayName,10), make_set(UserAgent,5), make_set(Location,5) (lines 68-71). Zero uncapped; no make_list calls."
+    },
+    {
+      "text": "tactics includes CredentialAccess and relevantTechniques includes T1110.003",
+      "passed": false,
+      "evidence": "tactics includes CredentialAccess (lines 29-30) but relevantTechniques is '- T1110' (line 32), the parent Brute Force technique, not the password-spraying sub-technique T1110.003. The description text names 'Password spray' and the rule is clearly T1110.003, so this is a metadata gap. Agrees with auto-grade."
+    },
+    {
+      "text": "rule.yaml includes incident grouping or suppression settings (incidentConfiguration.groupingConfiguration or suppressionDuration) or alert enrichment (customDetails / alertDetailsOverride)",
+      "passed": true,
+      "evidence": "incidentConfiguration.groupingConfiguration enabled, lookbackDuration 6h, groupByEntities [IP] (lines 113-123); customDetails with 17 keys (lines 89-106); alertDetailsOverride with display name, description and alertSeverityColumnName: Severity (lines 107-110)."
+    },
+    {
+      "text": "The query selects the hourly run window on ingestion_time() (the documented no-gap/no-duplicate form), not merely a declared delay variable used as a recency guard",
+      "passed": false,
+      "evidence": "programmatic: ingestion_time() run-window filter absent"
+    }
+  ],
+  "summary": {
+    "passed": 6,
+    "failed": 3,
+    "total": 9,
+    "pass_rate": 0.667
+  },
+  "claims": [
+    {
+      "claim": "rule.yaml parses as YAML",
+      "type": "quality",
+      "verified": true,
+      "evidence": "python3 yaml.safe_load succeeded; 20 top-level keys including id, kind: Scheduled, status: Available. Cosmetic defect: the description is a '|' block scalar whose text begins with a literal single quote and ends with one (\"'Identifies ...\" ... \"6 hours.'\"), so the deployed description will carry stray quote characters."
+    },
+    {
+      "claim": "KQL is plausibly valid for Log Analytics",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Parentheses 31/31 and brackets 3/3 balanced in non-comment code. SigninLogs columns referenced (IPAddress, UserPrincipalName, ResultType, TimeGenerated, ClientAppUsed, AppDisplayName, UserAgent, Location, NetworkLocationDetails, AutonomousSystemNumber) are real. toint(ResultType) with integer dynamic code lists is consistent; dcountif(..., 4) uses a valid accuracy level; 'IPAddress !in (dynamic([]))' is valid; 'NetworkLocationDetails has \"trustedNamedLocation\"' works on the string/dynamic column. No syntax errors spotted."
+    },
+    {
+      "claim": "Every customDetails / alertDetailsOverride column survives the final projection",
+      "type": "quality",
+      "verified": true,
+      "evidence": "All 17 customDetails values (StartTime, EndTime, FailedSignInCount, TargetedUserCount, AvgAttemptsPerUser, FailedUserShare, PasswordAcceptedUserCount, PasswordAcceptedUsers, TargetedUsersSample, FailureResultTypes, AcceptedResultTypes, ClientApps, TargetApplications, UserAgents, Countries, AutonomousSystemNumber, FromTrustedNamedLocation), the placeholders {{IPAddress}} {{TargetedUserCount}} {{FailedSignInCount}} and Severity are produced by summarize/extend and none is removed by the single project-away (TrustedNamedLocationSignIns). Dynamic set columns are not tostring()'d but Sentinel serialises dynamic custom details, so this is cosmetic."
+    },
+    {
+      "claim": "Deployable without surprises",
+      "type": "quality",
+      "verified": false,
+      "evidence": "Three surprises: (1) no ingestion-delay handling, so events landing late at the hour boundary can be missed or an active spray re-fires each run on overlapping data (mitigated only by 6h grouping); (2) T1110 instead of T1110.003 in MITRE metadata; (3) stray quote characters in the description. Also 50057 (account disabled) is counted as a password failure although Entra returns it regardless of password correctness, inflating spray counts against disabled accounts."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "The query handles ingestion delay explicitly: it uses ingestion_time() or declares a delay/wait window (e.g. let query_wait / ingestion_delay) that is added to the scan window",
+        "reason": "The assertion accepts a declared delay variable regardless of how it is used. A 'let ingestion_delay' that is only referenced in a post-aggregation recency guard (run A) and one that actually bounds the run slice via ingestion_time() (run B) both pass, yet only the latter prevents hourly re-alerting on the same events. Consider requiring that the run window itself is selected on ingestion_time()."
+      },
+      {
+        "assertion": "rule.yaml includes incident grouping or suppression settings (incidentConfiguration.groupingConfiguration or suppressionDuration) or alert enrichment (customDetails / alertDetailsOverride)",
+        "reason": "Trivially satisfiable: any rule with a customDetails block passes even with no incident grouping or suppression. All three runs pass; the OR makes it non-discriminating. Split into 'incident grouping configured' and 'customDetails/alertDetailsOverride columns exist in the output'."
+      },
+      {
+        "reason": "No assertion checks that customDetails / alertDetailsOverride placeholder columns actually survive the final projection (only the IP entity column is checked). This was correct in all three runs but is a common deploy-time failure and worth its own assertion."
+      },
+      {
+        "reason": "No assertion checks for the time-window coupling trap: a hard-coded 'where TimeGenerated > ago(X)' inside the query that must equal queryPeriod (run A) silently diverges from the YAML when either is edited. 'Deploy without surprises' arguably covers this."
+      }
+    ],
+    "overall": "Assertions 2 and 7 discriminated correctly here (two genuine deployability gaps). Assertion 8 remains trivially satisfied."
+  }
+}

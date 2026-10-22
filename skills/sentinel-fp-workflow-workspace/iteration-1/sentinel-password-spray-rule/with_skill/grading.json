@@ -1,0 +1,105 @@
+{
+  "expectations": [
+    {
+      "text": "rule.yaml has queryPeriod strictly longer than queryFrequency (no zero-overlap 1h/1h window) or the query selects the run window on ingestion_time()",
+      "passed": true,
+      "evidence": "queryFrequency: 1h (line 18), queryPeriod: 2h (line 19); 2h > 1h. Additionally the run window is selected on ingestion time: line 75 '| where coalesce(ingestion_time(), TimeGenerated) > now() - query_frequency'."
+    },
+    {
+      "text": "The query handles ingestion delay explicitly: it uses ingestion_time() or declares a delay/wait window (e.g. let query_wait / ingestion_delay) that is added to the scan window",
+      "passed": true,
+      "evidence": "Line 36 'let ingestion_delay = 1h;' with lines 34-35 documenting 'Scan window on event time = query_frequency + ingestion_delay' (query_period = 2h). Line 74 '| where TimeGenerated >= now() - query_period' is the wide event-time scan and line 75 '| where coalesce(ingestion_time(), TimeGenerated) > now() - query_frequency' is the exact run slice - this is the documented Microsoft pattern (wider TimeGenerated scan + ingestion_time() > ago(frequency)). Note query_period is a literal 2h, not computed from query_frequency + ingestion_delay, but the comment makes the relationship explicit."
+    },
+    {
+      "text": "Result codes are declared in let lists (not scattered inline) and the logic distinguishes MFA/Conditional-Access interrupt codes (e.g. 50074, 50076, 53003, 50158) as credential-valid from true credential failures (50126, 50053)",
+      "passed": true,
+      "evidence": "Lines 44-46 'let CredInvalid = dynamic([\"50126\", \"50053\", \"50034\"])' and lines 48-61 'let CredValid = dynamic([\"0\", \"50074\", \"50076\", \"50072\", \"50158\", \"53000\", \"53001\", \"53003\", ... \"50055\"])' with a per-code comment. Logic distinguishes them: line 87 'Failures = countif(ResultType in (CredInvalid))', line 88 'CredValidated = countif(ResultType in (CredValid))'; CredValidated accounts are surfaced separately (lines 97-98) and raise severity to High (line 119). All four example interrupt codes (50074, 50076, 53003, 50158) are classified as credential-valid."
+    },
+    {
+      "text": "The query aggregates by source IPAddress with a distinct count of user principals (dcount) and the threshold(s) are declared in let statements",
+      "passed": true,
+      "evidence": "Line 93 'SprayedAccounts = dcountif(UserPrincipalName, Failures between (1 .. max_failures_per_account))' and line 94 'DistinctFailedAccounts = dcountif(UserPrincipalName, Failures > 0)' in a summarize 'by IPAddress' (line 102). Thresholds in let statements: 'let min_distinct_accounts = 10;' (line 39) applied at line 103, 'let max_failures_per_account = 3;' (line 40)."
+    },
+    {
+      "text": "entityMappings contains an IP entity whose columnName appears, with identical casing, in the final projection of the query",
+      "passed": true,
+      "evidence": "entityMappings IP/Address columnName: IPAddress (lines 130-133). The final operator is '| project-reorder IPAddress, Severity, ...' (line 126), which keeps every column; IPAddress is the join key from Candidates and the right-side duplicate IPAddress1 is removed at line 118, so the output contains exactly one 'IPAddress' column with matching case."
+    },
+    {
+      "text": "Every make_set / make_list call in the query includes a size cap argument",
+      "passed": true,
+      "evidence": "7 make_set/make_set_if calls in non-comment code, all capped: make_set_if(UserPrincipalName, CredValidated > 0, 100), make_set_if(UserPrincipalName, Failures > 0, 25) (lines 98-99), make_set(AppDisplayName,20), make_set(ClientAppUsed,10), make_set(UserAgent,10), make_set(Location,10), make_set(ResultType,20) (lines 110-114). Zero uncapped. An uncapped make_list appears only inside a commented-out watchlist example (line 67)."
+    },
+    {
+      "text": "tactics includes CredentialAccess and relevantTechniques includes T1110.003",
+      "passed": true,
+      "evidence": "Lines 22-25: 'tactics:\\n  - CredentialAccess' and 'relevantTechniques:\\n  - T1110.003'."
+    },
+    {
+      "text": "rule.yaml includes incident grouping or suppression settings (incidentConfiguration.groupingConfiguration or suppressionDuration) or alert enrichment (customDetails / alertDetailsOverride)",
+      "passed": true,
+      "evidence": "incidentConfiguration.groupingConfiguration enabled, lookbackDuration 5h, groupByEntities [IP] (lines 147-155); suppressionDuration: 5h with suppressionEnabled: false (lines 156-157); customDetails with 6 keys (lines 134-140); alertDetailsOverride with display name, description using {{DetectionReason}} and alertSeverityColumnName: Severity (lines 141-144)."
+    },
+    {
+      "text": "The query selects the hourly run window on ingestion_time() (the documented no-gap/no-duplicate form), not merely a declared delay variable used as a recency guard",
+      "passed": false,
+      "evidence": "programmatic: ingestion_time() run-window filter absent"
+    }
+  ],
+  "summary": {
+    "passed": 8,
+    "failed": 1,
+    "total": 9,
+    "pass_rate": 0.889
+  },
+  "claims": [
+    {
+      "claim": "rule.yaml parses as YAML",
+      "type": "quality",
+      "verified": true,
+      "evidence": "python3 yaml.safe_load succeeded; 21 top-level keys including id, kind: Scheduled. No 'status' field (optional in the repo format but present in most current templates)."
+    },
+    {
+      "claim": "KQL is plausibly valid for Log Analytics",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Parentheses 49/49 and brackets 4/4 balanced in non-comment code. SigninLogs columns referenced (TimeGenerated, IPAddress, UserPrincipalName, ResultType, AppDisplayName, ClientAppUsed, UserAgent, Location, AutonomousSystemNumber) are real. materialize(), 'between (1 .. n)', 'in ((Candidates | project IPAddress))', join kind=inner ... on IPAddress followed by project-away IPAddress1, take_any, strcat with numeric args, coalesce(ingestion_time(), TimeGenerated) are all valid constructs. No syntax errors spotted."
+    },
+    {
+      "claim": "Every customDetails / alertDetailsOverride column survives the final projection",
+      "type": "quality",
+      "verified": true,
+      "evidence": "SprayedAccounts, TotalFailures, TotalSuccesses, CredentialValidatedCount, CredentialValidatedAccounts, SampleAccounts, DetectionReason, Severity and IPAddress all exist after the join/extends and project-reorder removes nothing; dynamic set columns are tostring()'d at lines 124-125."
+    },
+    {
+      "claim": "Deployable without surprises",
+      "type": "quality",
+      "verified": true,
+      "evidence": "Schedule, ingestion window and thresholds are all declared once at the top with comments; ingestion_time() slicing prevents duplicate alerts across runs; IPv6 null-handling for ipv4_is_in_any_range is explicit (line 79). Minor: the description says 'at most 3 failures per sprayed account in the hourly run window' but per-account failure counts are taken over the 2h TimeGenerated scan, so an account can accumulate failures from the previous run's slice too; query_period is a literal rather than query_frequency + ingestion_delay."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "The query handles ingestion delay explicitly: it uses ingestion_time() or declares a delay/wait window (e.g. let query_wait / ingestion_delay) that is added to the scan window",
+        "reason": "The assertion accepts a declared delay variable regardless of how it is used. A 'let ingestion_delay' that is only referenced in a post-aggregation recency guard (run A) and one that actually bounds the run slice via ingestion_time() (run B) both pass, yet only the latter prevents hourly re-alerting on the same events. Consider requiring that the run window itself is selected on ingestion_time()."
+      },
+      {
+        "assertion": "rule.yaml includes incident grouping or suppression settings (incidentConfiguration.groupingConfiguration or suppressionDuration) or alert enrichment (customDetails / alertDetailsOverride)",
+        "reason": "Trivially satisfiable: any rule with a customDetails block passes even with no incident grouping or suppression. All three runs pass; the OR makes it non-discriminating. Split into 'incident grouping configured' and 'customDetails/alertDetailsOverride columns exist in the output'."
+      },
+      {
+        "reason": "No assertion checks that customDetails / alertDetailsOverride placeholder columns actually survive the final projection (only the IP entity column is checked). This was correct in all three runs but is a common deploy-time failure and worth its own assertion."
+      },
+      {
+        "reason": "No assertion checks for the time-window coupling trap: a hard-coded 'where TimeGenerated > ago(X)' inside the query that must equal queryPeriod (run A) silently diverges from the YAML when either is edited. 'Deploy without surprises' arguably covers this."
+      }
+    ],
+    "overall": "This run satisfies every assertion with substantive evidence; the only non-discriminating assertion is 8 (OR of three independent features)."
+  }
+}
