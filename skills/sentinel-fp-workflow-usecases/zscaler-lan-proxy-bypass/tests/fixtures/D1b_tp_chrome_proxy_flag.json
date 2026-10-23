@@ -1,0 +1,24 @@
+{
+  "name": "D1b_tp_chrome_proxy_flag",
+  "query_now": "2026-10-23T09:00:00Z",
+  "tables": {
+    "DeviceProcessEvents": {
+      "schema": {"Timestamp": "datetime", "ReportId": "long", "DeviceId": "string", "DeviceName": "string", "ActionType": "string",
+                 "FileName": "string", "ProcessCommandLine": "string", "InitiatingProcessFileName": "string",
+                 "AccountSid": "string", "AccountName": "string"},
+      "events": [
+        {"Timestamp": "2026-10-23T08:40:00Z", "ReportId": 101, "DeviceId": "dev-aaa", "DeviceName": "lt-0421.corp.local", "ActionType": "ProcessCreated",
+         "FileName": "chrome.exe", "ProcessCommandLine": "\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --proxy-server=\"http=192.168.1.50:3128;https=192.168.1.50:3128\" --proxy-bypass-list=\"<local>\"",
+         "InitiatingProcessFileName": "explorer.exe", "AccountSid": "S-1-5-21-1-2-3-1001", "AccountName": "jdoe"},
+        {"Timestamp": "2026-10-23T08:41:00Z", "ReportId": 102, "DeviceId": "dev-bbb", "DeviceName": "lt-0999.corp.local", "ActionType": "ProcessCreated",
+         "FileName": "chrome.exe", "ProcessCommandLine": "\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --profile-directory=Default",
+         "InitiatingProcessFileName": "explorer.exe", "AccountSid": "S-1-5-21-1-2-3-1002", "AccountName": "asmith"},
+        {"Timestamp": "2026-10-23T08:42:00Z", "ReportId": 103, "DeviceId": "dev-ccc", "DeviceName": "lt-0100.corp.local", "ActionType": "ProcessCreated",
+         "FileName": "chrome.exe", "ProcessCommandLine": "\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --proxy-server=\"203.0.113.9:8080\"",
+         "InitiatingProcessFileName": "explorer.exe", "AccountSid": "S-1-5-21-1-2-3-1003", "AccountName": "public-proxy-user"}
+      ]
+    }
+  },
+  "expected_alerts": 1,
+  "expected_columns": {"DeviceId": ["dev-aaa"], "ProxyIp": ["192.168.1.50"]}
+}

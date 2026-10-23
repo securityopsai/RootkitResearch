@@ -1,0 +1,117 @@
+id: 7f3c2a1e-9b4d-4c6a-8e21-5d0f6a9b3c47
+name: Browser traffic routed to a rare LAN proxy (Zscaler bypass)
+description: |
+  Identifies devices whose browsers send sustained traffic to a private LAN host on a proxy port, or that issue HTTP
+  CONNECT requests to a private IP, while that destination is used by three or fewer devices in the estate. This is the
+  network footprint of a user pointing the browser or system proxy at another LAN host that egresses directly, so web
+  traffic never transits Zscaler. Sanctioned proxies are excluded by watchlist and by population (many devices use them).
+  Investigate the destination host, the account, and whether the device's ZIA web logs stopped at the same time.
+  Thresholds: 25 connections per device and destination per run window, or 5 CONNECT requests. Ref: MITRE T1090.001.
+severity: Medium
+requiredDataConnectors:
+  - connectorId: MicrosoftThreatProtection
+    dataTypes:
+      - DeviceNetworkEvents
+queryFrequency: 1h
+queryPeriod: 2h
+triggerOperator: gt
+triggerThreshold: 0
+tactics:
+  - CommandAndControl
+  - DefenseEvasion
+relevantTechniques:
+  - T1090.001
+  - T1562.001
+query: |
+  let query_frequency = 1h;
+  let ingestion_delay = 1h;             // measured p90 for DeviceNetworkEvents via the XDR connector; queryPeriod = frequency + delay
+  let ProxyPorts = dynamic([3128, 3129, 8080, 8081, 8118, 8888, 1080, 1081, 9050, 8000, 8443]);
+  let Browsers = dynamic(["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "chromium.exe", "iexplore.exe"]);
+  let MinConnections = 25;
+  let MinConnectRequests = 5;
+  let MaxDevicesPerDestination = 3;
+  let ApprovedProxyIPs = _GetWatchlist('ApprovedProxies')
+      | extend Address = column_ifexists("Address", "")
+      | where isnotempty(Address)
+      | project tostring(Address);
+  let Base = DeviceNetworkEvents
+      | where TimeGenerated >= ago(query_frequency + ingestion_delay)
+      | where ingestion_time() > ago(query_frequency)
+      | where RemoteIPType == "Private" and RemoteIP !in (ApprovedProxyIPs);
+  let ByPort = Base
+      | where ActionType == "ConnectionSuccess" and RemotePort in (ProxyPorts) and InitiatingProcessFileName in~ (Browsers)
+      | extend Signal = "browser-to-proxy-port";
+  let ByConnect = Base
+      | where ActionType == "HttpConnectionInspected"
+      | extend Method = tostring(parse_json(AdditionalFields).method)
+      | where Method =~ "CONNECT"
+      | extend Signal = "http-connect-to-lan";
+  let Candidates = union ByPort, ByConnect
+      | project TimeGenerated, DeviceId, DeviceName, RemoteIP, RemotePort, Signal, InitiatingProcessFileName, InitiatingProcessAccountName, InitiatingProcessAccountUpn;
+  let Population = Candidates
+      | summarize DevicesUsing = dcount(DeviceId) by RemoteIP, RemotePort
+      | where DevicesUsing <= MaxDevicesPerDestination;
+  Candidates
+  | join kind=inner Population on RemoteIP, RemotePort
+  // Begin environment-specific filter.
+  // End environment-specific filter.
+  | summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), Connections = count(),
+              ConnectRequests = countif(Signal == "http-connect-to-lan"),
+              Processes = make_set(InitiatingProcessFileName, 5), Accounts = make_set(InitiatingProcessAccountName, 5),
+              AccountUpn = take_any(InitiatingProcessAccountUpn), DevicesUsing = max(DevicesUsing)
+    by DeviceId, DeviceName, RemoteIP, RemotePort
+  | where Connections >= MinConnections or ConnectRequests >= MinConnectRequests
+  | extend Severity = iff(ConnectRequests >= MinConnectRequests, "High", "Medium")
+  | extend HostName = tostring(split(DeviceName, ".")[0]),
+           DnsDomain = iff(indexof(DeviceName, ".") != -1, substring(DeviceName, indexof(DeviceName, ".") + 1), ""),
+           AccountName = tostring(split(AccountUpn, "@")[0]),
+           UPNSuffix = tostring(split(AccountUpn, "@")[1]),
+           ProcessList = tostring(Processes)
+  | project-reorder StartTime, EndTime, DeviceName, AccountUpn, RemoteIP, RemotePort, Connections, ConnectRequests, DevicesUsing, ProcessList, Severity
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: FullName
+        columnName: DeviceName
+      - identifier: HostName
+        columnName: HostName
+      - identifier: DnsDomain
+        columnName: DnsDomain
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: RemoteIP
+  - entityType: Account
+    fieldMappings:
+      - identifier: FullName
+        columnName: AccountUpn
+      - identifier: Name
+        columnName: AccountName
+      - identifier: UPNSuffix
+        columnName: UPNSuffix
+customDetails:
+  Connections: Connections
+  ConnectRequests: ConnectRequests
+  DevicesUsingDestination: DevicesUsing
+  Processes: ProcessList
+  ProxyPort: RemotePort
+alertDetailsOverride:
+  alertDisplayNameFormat: "{{DeviceName}} routes browser traffic to LAN proxy {{RemoteIP}}:{{RemotePort}} (Zscaler bypass)"
+  alertDescriptionFormat: "{{Connections}} connections and {{ConnectRequests}} HTTP CONNECT requests from {{DeviceName}} ({{AccountUpn}}) to {{RemoteIP}}:{{RemotePort}}, a private destination used by {{DevicesUsing}} device(s). Check whether ZIA web logs for this user stopped in the same window."
+  alertSeverityColumnName: Severity
+eventGroupingSettings:
+  aggregationKind: AlertPerResult
+incidentConfiguration:
+  createIncident: true
+  groupingConfiguration:
+    enabled: true
+    reopenClosedIncident: false
+    lookbackDuration: 5h
+    matchingMethod: Selected
+    groupByEntities:
+      - Host
+      - IP
+suppressionDuration: 5h
+suppressionEnabled: false
+version: 1.0.0
+kind: Scheduled

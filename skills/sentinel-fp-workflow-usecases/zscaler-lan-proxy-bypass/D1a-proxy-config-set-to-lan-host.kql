@@ -1,0 +1,32 @@
+// DETECTION STRATEGY: system/browser proxy configuration redirected to a private LAN host → browser traffic
+//   leaves the Zscaler path (ZIA sees nothing, no URL filtering, no DLP). T1090.001 Internal Proxy; T1562.001 Impair Defenses.
+// THE MECHANIC: user/attacker sets WinINET ProxyServer / AutoConfigURL, or a Chrome/Edge/Firefox policy proxy, to <LAN IP>:<port>.
+//   With RFC1918 destinations excluded from the ZCC tunnel (common), the LAN proxy forwards to the internet directly.
+// THE RESILIENCE: keyed on the VALUE (a private IPv4 or single-label host) not on the process writing it; survives any tool.
+// DATA: DeviceRegistryEvents RegistryValueSet — retention 30 d — sampled: no, but key coverage is a per-tenant fact [VERIFY with preflight]
+// TP LIKELIHOOD WHEN IT FIRES: high (a private proxy address in ProxyServer/AutoConfigURL is rarely benign outside approved proxies)
+// COVERAGE CAVEAT: misses WinHTTP (binary blob; see D1b), Firefox prefs.js edits (file-level only; see D2 for the network side),
+//   proxies named by DNS FQDN, and hosts where MDE does not collect the Internet Settings keys.
+// Platform: Defender XDR custom detection, Every hour (4 h lookback, evaluated on ingestion_time). NRT-eligible: single table, no join.
+let query_frequency = 1h;   // rule frequency; lookback 4h is fixed by the platform — no self-inflicted Timestamp filter
+let ApprovedProxies = dynamic([]);            // "ip:port" of sanctioned forward proxies / PAC hosts — empty by default
+let ProxyValueNames = dynamic(["ProxyServer", "AutoConfigURL", "ProxyPacUrl", "ProxyMode"]);
+DeviceRegistryEvents
+| where ActionType == "RegistryValueSet"
+| where RegistryValueName in~ (ProxyValueNames)
+| where RegistryKey has "Internet Settings"
+    or RegistryKey has_any (@"Policies\Google\Chrome", @"Policies\Microsoft\Edge", @"Policies\Mozilla\Firefox", @"Policies\Chromium")
+| extend ProxyIp = extract(@"((?:\d{1,3}\.){3}\d{1,3})", 1, RegistryValueData),
+         ProxyHostPort = extract(@"((?:\d{1,3}\.){3}\d{1,3}:\d{1,5})", 1, RegistryValueData),
+         SingleLabelHost = extract(@"(?i)^(?:https?=)?([a-z0-9-]{1,63}(?:\.local)?):\d{1,5}$", 1, RegistryValueData)
+| extend ProxyTarget = coalesce(ProxyHostPort, strcat(ProxyIp, ""), SingleLabelHost)
+| where (isnotempty(ProxyIp) and ipv4_is_private(ProxyIp)) or isnotempty(SingleLabelHost)
+| where ProxyTarget !in (ApprovedProxies)
+// Begin environment-specific filter.
+// OPTION 1: | where not(InitiatingProcessFileName in~ ("IntuneManagementExtension.exe", "gpupdate.exe", "svchost.exe"))  // management-pushed proxy policy
+// End environment-specific filter.
+| summarize (Timestamp, ReportId) = arg_min(Timestamp, ReportId), Changes = count(),
+            Values = make_set(RegistryValueData, 10), ValueNames = make_set(RegistryValueName, 5),
+            Initiators = make_set(InitiatingProcessFileName, 5), Keys = make_set(RegistryKey, 5)
+  by DeviceId, DeviceName, InitiatingProcessAccountSid, InitiatingProcessAccountName, ProxyTarget
+// DedupFields: DeviceId, ProxyTarget. Impacted assets: Device=DeviceId, Account=InitiatingProcessAccountSid.

@@ -1,0 +1,20 @@
+{
+  "name": "D1b_tn_netsh_show",
+  "query_now": "2026-10-23T09:00:00Z",
+  "tables": {
+    "DeviceProcessEvents": {
+      "schema": {"Timestamp": "datetime", "ReportId": "long", "DeviceId": "string", "DeviceName": "string", "ActionType": "string",
+                 "FileName": "string", "ProcessCommandLine": "string", "InitiatingProcessFileName": "string",
+                 "AccountSid": "string", "AccountName": "string"},
+      "events": [
+        {"Timestamp": "2026-10-23T08:40:00Z", "ReportId": 201, "DeviceId": "dev-aaa", "DeviceName": "lt-0421.corp.local", "ActionType": "ProcessCreated",
+         "FileName": "netsh.exe", "ProcessCommandLine": "netsh winhttp show proxy", "InitiatingProcessFileName": "cmd.exe",
+         "AccountSid": "S-1-5-21-1-2-3-1001", "AccountName": "jdoe"},
+        {"Timestamp": "2026-10-23T08:41:00Z", "ReportId": 202, "DeviceId": "dev-aaa", "DeviceName": "lt-0421.corp.local", "ActionType": "ProcessCreated",
+         "FileName": "reg.exe", "ProcessCommandLine": "reg query \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\" /v ProxyServer",
+         "InitiatingProcessFileName": "cmd.exe", "AccountSid": "S-1-5-21-1-2-3-1001", "AccountName": "jdoe"}
+      ]
+    }
+  },
+  "expected_alerts": 0
+}

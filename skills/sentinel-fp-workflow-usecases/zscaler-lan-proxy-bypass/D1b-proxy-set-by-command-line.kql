@@ -1,0 +1,30 @@
+// DETECTION STRATEGY: a browser or tool is told to use a private LAN proxy on the command line, or WinHTTP/WinINET proxy is set
+//   from the shell → traffic bypasses Zscaler. T1090.001 Internal Proxy; T1562.001 Impair Defenses.
+// THE MECHANIC: chrome/msedge/brave --proxy-server=<lan>:<port> or --proxy-pac-url=http://<lan>/x.pac overrides system proxy and
+//   any ZCC-enforced setting; `netsh winhttp set proxy` and `reg add ... ProxyServer` / PowerShell Set-ItemProperty cover the rest.
+// THE RESILIENCE: anchored on FileName (browser/netsh/reg/powershell) + the one invariant token per tool + a private IPv4 in the line.
+// DATA: DeviceProcessEvents ProcessCreated — retention 30 d — sampled: no
+// TP LIKELIHOOD WHEN IT FIRES: high for --proxy-server/--proxy-pac-url to a private IP; medium for PowerShell (dev tooling sets proxies)
+// COVERAGE CAVEAT: Firefox proxy via prefs.js/user.js is not a command line; env vars HTTP_PROXY set in a profile are invisible here;
+//   a proxy named by FQDN does not match the IPv4 extract (D2 catches the traffic).
+// Platform: Defender XDR custom detection, Every hour. NRT-eligible: single table, no join/union/externaldata.
+let query_frequency = 1h;
+let ApprovedProxies = dynamic([]);            // "ip:port" of sanctioned proxies
+let Browsers = dynamic(["chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "vivaldi.exe", "chromium.exe", "firefox.exe"]);
+DeviceProcessEvents
+| where ActionType == "ProcessCreated"
+| where (FileName in~ (Browsers) and ProcessCommandLine has_any ("--proxy-server", "--proxy-pac-url"))
+     or (FileName =~ "netsh.exe" and ProcessCommandLine has_all ("winhttp", "proxy-server"))
+     or (FileName =~ "reg.exe" and ProcessCommandLine has_any ("ProxyServer", "AutoConfigURL") and ProcessCommandLine !has "query")
+     or (FileName in~ ("powershell.exe", "pwsh.exe") and ProcessCommandLine has_any ("ProxyServer", "AutoConfigURL", "HTTPS_PROXY", "HTTP_PROXY", "WebProxy"))
+| extend ProxyIp = extract(@"((?:\d{1,3}\.){3}\d{1,3})", 1, ProcessCommandLine),
+         ProxyHostPort = extract(@"((?:\d{1,3}\.){3}\d{1,3}:\d{1,5})", 1, ProcessCommandLine)
+| where isnotempty(ProxyIp) and ipv4_is_private(ProxyIp)
+| where ProxyHostPort !in (ApprovedProxies)
+// Begin environment-specific filter.
+// OPTION 1: | where not(InitiatingProcessFileName in~ ("devenv.exe", "code.exe"))   // developer tooling that launches browsers with flags
+// End environment-specific filter.
+| summarize (Timestamp, ReportId) = arg_min(Timestamp, ReportId), Count = count(),
+            CommandLines = make_set(ProcessCommandLine, 5), Parents = make_set(InitiatingProcessFileName, 5)
+  by DeviceId, DeviceName, AccountSid, AccountName, FileName, ProxyIp
+// DedupFields: DeviceId, FileName, ProxyIp. Impacted assets: Device=DeviceId, Account=AccountSid.

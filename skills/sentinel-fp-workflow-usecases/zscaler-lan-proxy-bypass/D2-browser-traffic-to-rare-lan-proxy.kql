@@ -1,0 +1,48 @@
+// DETECTION STRATEGY: browser (or any process) is actually sending its web traffic to a private LAN host that behaves like a proxy →
+//   Zscaler is bypassed in practice, whatever the configuration says. T1090.001 Internal Proxy; T1562.001 Impair Defenses.
+// THE MECHANIC: proxied browsing produces many connections from the browser to <LAN IP>:<proxy port>, and HTTP CONNECT requests
+//   to that host (the browser tunnels HTTPS through the proxy with CONNECT host:443). ZCC's own local proxy is on loopback, not RFC1918.
+// THE RESILIENCE: two independent signals — proxy-port volume from browser processes, and HTTP CONNECT to a private IP on any port —
+//   plus a fleet population filter: sanctioned proxies are used by many devices, a rogue LAN proxy by one or a few.
+// DATA: DeviceNetworkEvents ConnectionSuccess (throttled by MDE → counts are a floor) and HttpConnectionInspected (Zeek; sampled,
+//   no process context) — retention 30 d — sampled: yes
+// TP LIKELIHOOD WHEN IT FIRES: medium-high; FPs are unregistered corporate proxies, dev proxies (Fiddler/Burp on another box), and
+//   printers/NAS web UIs on 8080 (volume filter and CONNECT signal separate those).
+// COVERAGE CAVEAT: non-standard proxy ports are only caught by the CONNECT signal (sampled); SOCKS proxies (no CONNECT) only by port;
+//   SSH -D tunnels present as loopback and are out of scope; the LAN proxy host itself is covered by D3 only when it is onboarded.
+// Platform: Defender XDR custom detection, Every hour (4 h lookback). Not NRT (union + join).
+let query_frequency = 1h;
+let ProxyPorts = dynamic([3128, 3129, 8080, 8081, 8118, 8888, 1080, 1081, 9050, 8000, 8443, 8118]);
+let Browsers = dynamic(["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "chromium.exe", "iexplore.exe"]);
+let ApprovedProxyIPs = dynamic([]);            // sanctioned forward proxies, PAC hosts, ZCC relays reachable on RFC1918 space
+let MinConnections = 25;                       // per device+destination within the lookback; a proxied browsing session makes hundreds
+let MaxDevicesPerDestination = 3;              // destinations used by more devices are treated as sanctioned infrastructure (BTP)
+let ByPort = DeviceNetworkEvents
+    | where ActionType == "ConnectionSuccess" and RemoteIPType == "Private"
+    | where RemotePort in (ProxyPorts) and InitiatingProcessFileName in~ (Browsers)
+    | extend Signal = "browser-to-proxy-port";
+let ByConnect = DeviceNetworkEvents
+    | where ActionType == "HttpConnectionInspected" and RemoteIPType == "Private"
+    | extend Method = tostring(parse_json(AdditionalFields).method)
+    | where Method =~ "CONNECT"
+    | extend Signal = "http-connect-to-lan";
+let Candidates = union ByPort, ByConnect
+    | where RemoteIP !in (ApprovedProxyIPs)
+    | project Timestamp, ReportId, DeviceId, DeviceName, RemoteIP, RemotePort, Signal,
+              InitiatingProcessFileName, InitiatingProcessAccountSid, InitiatingProcessAccountName;
+let Population = Candidates
+    | summarize DevicesUsing = dcount(DeviceId) by RemoteIP, RemotePort
+    | where DevicesUsing <= MaxDevicesPerDestination;
+Candidates
+| join kind=inner Population on RemoteIP, RemotePort
+// Begin environment-specific filter.
+// OPTION 1: | where not(ipv4_is_in_any_range(RemoteIP, dynamic(["10.200.0.0/24"])))   // lab / red-team VLAN
+// End environment-specific filter.
+| summarize (Timestamp, ReportId) = arg_max(Timestamp, ReportId), Connections = count(),
+            ConnectRequests = countif(Signal == "http-connect-to-lan"), FirstSeen = min(Timestamp), LastSeen = max(Timestamp),
+            Processes = make_set(InitiatingProcessFileName, 5), Accounts = make_set(InitiatingProcessAccountName, 5),
+            DevicesUsing = max(DevicesUsing), AccountSid = take_any(InitiatingProcessAccountSid)
+  by DeviceId, DeviceName, RemoteIP, RemotePort
+| where Connections >= MinConnections or ConnectRequests >= 5
+| extend Severity = iff(ConnectRequests >= 5, "High", "Medium")
+// DedupFields: DeviceId, RemoteIP, RemotePort. Impacted assets: Device=DeviceId, Account=AccountSid; related evidence: IP=RemoteIP.

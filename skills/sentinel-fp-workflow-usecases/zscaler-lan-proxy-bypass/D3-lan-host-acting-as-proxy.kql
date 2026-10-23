@@ -1,0 +1,34 @@
+// DETECTION STRATEGY: an onboarded device on the LAN is serving as a web proxy for its peers (the other end of the bypass). T1090.001.
+// THE MECHANIC: a proxy daemon (squid, 3proxy, mitmproxy, tinyproxy, privoxy, CCProxy, nginx/haproxy as forward proxy, Fiddler/Burp)
+//   listens on a proxy port and accepts inbound connections from several distinct private peers, then egresses to the internet itself.
+// THE RESILIENCE: keyed on inbound peer diversity per device+port, not on the binary name; the listener process is context only.
+// DATA: DeviceNetworkEvents InboundConnectionAccepted / ListeningConnectionCreated — retention 30 d — sampled: yes (throttled)
+// TP LIKELIHOOD WHEN IT FIRES: medium (dev workstations running local proxies for testing are the main BTP; printers/NAS are not
+//   onboarded so they do not fire here)
+// COVERAGE CAVEAT: a personal laptop, Raspberry Pi or phone hotspot acting as the proxy is not onboarded → invisible; covered only by D2
+//   from the client side. Servers behind a load balancer legitimately accept many peers on 8080 → exclude by device group or watchlist.
+// Platform: Defender XDR custom detection, Every hour (4 h lookback). Not NRT (join).
+let query_frequency = 1h;
+let ProxyPorts = dynamic([3128, 3129, 8080, 8081, 8118, 8888, 1080, 1081, 9050, 8000, 8443]);
+let MinPeers = 3;                              // distinct private source IPs within the lookback
+let ApprovedProxyDevices = dynamic([]);        // DeviceId of sanctioned proxy / reverse-proxy hosts
+let ProxyBinaries = dynamic(["squid.exe", "squid", "3proxy.exe", "3proxy", "mitmproxy", "mitmdump", "mitmproxy.exe", "mitmdump.exe",
+                             "privoxy.exe", "privoxy", "tinyproxy", "ccproxy.exe", "nginx.exe", "nginx", "haproxy", "fiddler.exe",
+                             "burpsuite", "java.exe", "gost.exe", "gost", "proxifier.exe", "python.exe", "python3", "node.exe", "node"]);
+let Listeners = DeviceNetworkEvents
+    | where ActionType == "ListeningConnectionCreated" and LocalPort in (ProxyPorts)
+    | summarize ListenerProcesses = make_set(InitiatingProcessFileName, 5), ListenerCmd = take_any(InitiatingProcessCommandLine) by DeviceId, LocalPort;
+DeviceNetworkEvents
+| where ActionType == "InboundConnectionAccepted" and RemoteIPType == "Private" and LocalPort in (ProxyPorts)
+| where DeviceId !in (ApprovedProxyDevices)
+| summarize (Timestamp, ReportId) = arg_max(Timestamp, ReportId), Peers = dcount(RemoteIP), PeerSample = make_set(RemoteIP, 10),
+            Connections = count(), AcceptingProcesses = make_set(InitiatingProcessFileName, 5)
+  by DeviceId, DeviceName, LocalPort
+| where Peers >= MinPeers
+| join kind=leftouter Listeners on DeviceId, LocalPort
+| extend KnownProxyBinary = set_has_element(ProxyBinaries, tolower(tostring(AcceptingProcesses[0])))
+// Begin environment-specific filter.
+// OPTION 1: | where not(DeviceName has_any ("-web-", "-lb-"))   // sanctioned reverse proxies by naming convention
+// End environment-specific filter.
+| project-away DeviceId1, LocalPort1
+// DedupFields: DeviceId, LocalPort. Impacted assets: Device=DeviceId; related evidence: IP=PeerSample (first element).
