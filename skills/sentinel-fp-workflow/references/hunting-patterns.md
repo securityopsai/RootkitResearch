@@ -14,17 +14,17 @@ baselines see `rule-windows-and-baselines.md`; for operator gotchas see `kql-got
 | Output | Wide, ranked (`sort by Score desc`, `top N by X asc`), `make_set` context, `project-reorder` who/where/what/how | One row per investigated entity, `arg_max`/`arg_min(..., *)`, platform-required columns, entity columns split for mapping |
 | Thresholds | Loose and parameterised; prose says "raise to get fewer rows" | Compound, floored, with a population filter (`dcount(DeviceId) <= N`) |
 | Noise | "You may need to exclude X" | Watchlist-backed exclusions inside a fenced tuning region |
-| Dedup | None | Platform grouping/suppression (Sentinel) or dedup key (XDR) |
+| Dedup | Usually none | Run window + stable entity keys; XDR dedup key; Sentinel incident grouping (does not remove duplicate alerts) |
 | Metadata | Hypothesis, analyst action, FP expectation label | Severity, MITRE, data sources, blind spots, version history |
 | YAML (Sentinel repo) | `id, name, description, requiredDataConnectors, tactics, relevantTechniques, query, entityMappings, version` — **no** `severity`, `queryFrequency`, `queryPeriod`, `triggerOperator`, `triggerThreshold`, `kind` | Full scheduling block |
 
 A hunt that carries `severity` or `kind: Scheduled` is a lint error. A detection whose
 description still says "this hunting query looks for" was promoted without rewriting.
 
-The cleanest explicit statement of the boundary (ep3p): the **same parameterised function is a
-hunt when `query_frequency == query_period`** (look at all activity in the window) **and a
-detection when `query_frequency < query_period`** (look at the new activity against the rest as
-baseline). Design hunts with that promotion in mind.
+A useful design habit (ep3p): write the **same parameterised function** so it is a hunt when
+`query_frequency == query_period` (all activity in the window) and a detection when
+`query_frequency < query_period` (new activity against the rest as baseline). This is a repository
+convention, not a Sentinel rule — a scheduled detection may have equal frequency and period.
 
 Taxonomy that works for a hunting library: **Detect** (alert-worthy if it fires), **Find**
 (interesting, not necessarily bad), **Summarize**, **Visualize**; or `detection | hunt | posture`
@@ -318,8 +318,9 @@ an indicator arrives. AppLocker emits PE256, not SHA256 — hash rules silently 
 4. **Externalise allow-lists** to watchlists keyed by rule scope; keep a fenced tuning region
    (`// Begin environment-specific filter.` … `// End environment-specific filter.`) with
    pre-written `// OPTION` lines; grep for `CHANGE IF DIFFERENT FOR YOUR ORG` in CI.
-5. **Dedup**: Sentinel grouping/`suppressionDuration`; XDR dedup key documented next to the
-   output projection and re-validated when columns change.
+5. **Dedup**: stable entity keys and a correct run window; XDR dedup key documented next to the
+   output projection and re-validated when columns change. Sentinel incident grouping does not remove
+   duplicate alerts, and `suppressionEnabled` pauses the whole rule — document the choice.
 6. **Drop portal-only operators**: `render`, `evaluate pivot`, `search`, `union *`, `take`; long
    baselines (90–365 d) move to a summary rule / custom table / watchlist, the rule becomes a cheap `!in`.
 7. **Rewrite the description** ("Identifies/Detects …", threshold and window in prose, `Ref:`),

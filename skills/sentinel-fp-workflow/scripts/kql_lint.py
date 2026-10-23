@@ -25,6 +25,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # works under python -I and when imported from elsewhere
+from kql_text import segments, views
+
 FENCE_RE = re.compile(r"^```\s*([A-Za-z0-9_+-]*)\s*$")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$")
 IGNORE_RE = re.compile(r"lint:ignore\s+([A-Z]\d{3}(?:\s*,\s*[A-Z]\d{3})*)")
@@ -39,16 +42,8 @@ IDENTIFIER_COLS = r"(DeviceId|DeviceName|AccountSid|AccountObjectId|AccountUpn|S
 
 def strip_strings_and_comments(line: str):
     """Return (code_without_string_literals, list_of_string_literals, comment)."""
-    comment = ""
-    idx = line.find("//")
-    if idx >= 0:
-        # crude: ignore // inside string literals
-        before = line[:idx]
-        if before.count('"') % 2 == 0 and before.count("'") % 2 == 0:
-            comment = line[idx:]
-            line = before
-    literals = re.findall(r'@?"[^"]*"|@?\'[^\']*\'', line)
-    code = re.sub(r'@?"[^"]*"|@?\'[^\']*\'', '""', line)
+    code, _, comment = views(line)
+    literals = [line[a:b] for kind, a, b in segments(line) if kind == 'string']
     return code, literals, comment
 
 
@@ -57,12 +52,18 @@ def lint_query(text: str, platform: str = "auto", hunt: bool = False):
     findings = []
     lines = text.split("\n")
     full = "\n".join(lines)
-    full_code = "\n".join(strip_strings_and_comments(l)[0] for l in lines)
+    try:
+        full_code, full_nc, full_comments = views(full)
+    except ValueError as exc:
+        return [(0, 'E017', 'error', str(exc))], platform
+    code_lines = full_code.split('\n')
+    nc_lines = full_nc.split('\n')
+    comment_lines = full_comments.split('\n')
 
     def add(ln, code, level, msg):
         # per-line ignore
         if ln >= 1:
-            m = IGNORE_RE.search(lines[ln - 1])
+            m = IGNORE_RE.search(comment_lines[ln - 1])
             if m and code in [c.strip() for c in m.group(1).split(",")]:
                 return
         findings.append((ln, code, level, msg))
@@ -75,8 +76,7 @@ def lint_query(text: str, platform: str = "auto", hunt: bool = False):
         elif has_tg and not has_ts:
             platform = "sentinel"
 
-    let_names = re.findall(r"^\s*let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=", full, re.M)
-    mat_lets = re.findall(r"^\s*let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*materialize\s*\(", full, re.M)
+    mat_lets = re.findall(r"^\s*let\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*materialize\s*\(", full_code, re.M)
     for name in mat_lets:
         refs = len(re.findall(r"\b%s\b" % re.escape(name), full_code)) - 1
         if refs < 2:
@@ -95,17 +95,17 @@ def lint_query(text: str, platform: str = "auto", hunt: bool = False):
             add(ln, "W009", "warn", "window function after `order by <time>` only — sort by <entity>, <time> or rows of different entities get compared")
 
     if platform == "xdr" and has_tg:
-        ln = next((i + 1 for i, l in enumerate(lines) if "TimeGenerated" in strip_strings_and_comments(l)[0]), 0)
+        ln = next((i + 1 for i, l in enumerate(code_lines) if "TimeGenerated" in l), 0)
         add(ln, "W010", "warn", "TimeGenerated in an XDR (Advanced Hunting) query — use Timestamp (dual-platform copy drift)")
     if platform == "sentinel" and has_ts and not re.search(r"\b(Device|Email|Identity|CloudApp|Url|Alert)\w*\b", full_code):
-        ln = next((i + 1 for i, l in enumerate(lines) if re.search(r"\bTimestamp\b", strip_strings_and_comments(l)[0])), 0)
+        ln = next((i + 1 for i, l in enumerate(code_lines) if re.search(r"\bTimestamp\b", l)), 0)
         add(ln, "W010", "warn", "Timestamp in a Sentinel query on a non-XDR table — use TimeGenerated")
 
     has_ingestion = "ingestion_time()" in full_code
     if not hunt and platform == "sentinel" and not has_ingestion and re.search(r"TimeGenerated\s*>=?\s*ago\(", full_code):
         add(0, "I013", "info", "Sentinel rule bounds on TimeGenerated without ingestion_time() — add the ingestion-delay window (TimeGenerated >= ago(delay+lookback) and ingestion_time() > ago(lookback))")
     if not hunt and platform == "xdr" and re.search(r"\bTimestamp\s*>=?\s*ago\(", full_code) and not re.search(r"\bTimestamp\s+between\s*\(", full_code):
-        ln = next((i + 1 for i, l in enumerate(lines) if re.search(r"\bTimestamp\s*>=?\s*ago\(", strip_strings_and_comments(l)[0])), 0)
+        ln = next((i + 1 for i, l in enumerate(code_lines) if re.search(r"\bTimestamp\s*>=?\s*ago\(", l)), 0)
         add(ln, "W012", "warn", "`Timestamp > ago()` on the recent window of an XDR custom detection drops late-arriving events — the service evaluates the lookback on ingestion_time(); keep explicit Timestamp bounds only on the baseline half")
 
     if not hunt and platform == "xdr" and re.search(r"\bsummarize\b", full_code) and "ReportId" not in full_code:
@@ -115,7 +115,9 @@ def lint_query(text: str, platform: str = "auto", hunt: bool = False):
         add(0, "I014", "info", "no time bound at all — fine in a portal with a time picker, not in a scheduled rule or a shared hunt")
 
     # dynamic([...]) lists bound to a let and consumed by has_any/has_all: look through the indirection
-    for m in re.finditer(r"let\s+([A-Za-z_]\w*)\s*=\s*dynamic\s*\(\s*\[(.*?)\]\s*\)", full, re.S):
+    for m in re.finditer(r"let\s+([A-Za-z_]\w*)\s*=\s*dynamic\s*\(\s*\[(.*?)\]\s*\)", full_nc, re.S):
+        if full_code[m.start():m.start()+3] != 'let':
+            continue
         name, body = m.group(1), m.group(2)
         items = [a or b for a, b in re.findall(r"@?\"([^\"]*)\"|@?'([^']*)'", body)]
         if not items:
@@ -126,17 +128,20 @@ def lint_query(text: str, platform: str = "auto", hunt: bool = False):
             add(ln, "W015", "warn", f"`{name}` holds full command-line strings consumed by `{use.group(1)}` — reorder/quoting/omitted `.exe` evades it; anchor on FileName and match 2–4 unordered tokens")
 
     # term-match checks run on the whole text so multi-line literal lists are seen
-    full_nc = "\n".join((strip_strings_and_comments(l)[0] if False else l.split("//")[0] if l.count('"') % 2 == 0 and l.count("'") % 2 == 0 else l) for l in lines)
     # list form: op ( "a", "b", ... ) may span lines; scalar form: op "a" takes exactly one literal
     LIT = r"(?:@?\"[^\"]*\"|@?'[^']*')"
     term_re = re.compile(r"\b(has_any|has_all|has|has_cs|contains|contains_cs|startswith|endswith)\s*(?:\(\s*((?:%s[\s,]*)+)\)|(%s))" % (LIT, LIT))
     for m in term_re.finditer(full_nc):
+        if full_code[m.start():m.start()+len(m.group(1))] != m.group(1):
+            continue
         ln = full_nc.count("\n", 0, m.start()) + 1
         op = m.group(1)
         terms = [a or b for a, b in re.findall(r"@?\"([^\"]*)\"|@?'([^']*)'", m.group(2) or m.group(3) or "")]
         for t in terms:
-            if op.startswith("has") and len(t.strip()) <= 3 and t.strip():
-                add(ln, "W006", "warn", f"`{op}` term \"{t}\" is <= 3 chars — not term-indexed (full scan) and matches noise")
+            if op.startswith("has") and 0 < len(t.strip()) < 3:
+                add(ln, "W006", "warn", f"`{op}` term \"{t}\" is < 3 chars — not term-indexed (Kusto term index starts at 3 chars); full scan")
+            elif op.startswith("has") and len(t.strip()) == 3:
+                add(ln, "I006", "info", f"`{op}` term \"{t}\" is exactly 3 chars — indexed per Kusto docs, but the Defender advanced-hunting best-practices page says to avoid terms of 3 or fewer; prefer a longer anchor when one exists")
             elif op.startswith("contains") and len(t.strip()) <= 3 and t.strip():
                 add(ln, "W006", "warn", f"`{op}` on \"{t}\" — substring scan on a tiny token; anchor on FileName/ActionType instead")
         if op == "has_all" and len(terms) >= 7:
@@ -147,14 +152,14 @@ def lint_query(text: str, platform: str = "auto", hunt: bool = False):
             add(ln, "I015", "info", "full path literal in a term match — lab/sample-specific path?")
 
     for i, raw in enumerate(lines, start=1):
-        code, literals, comment = strip_strings_and_comments(raw)
-        lit_vals = [l.strip("@").strip("\"'") for l in literals]
+        code, comment = code_lines[i - 1], comment_lines[i - 1]
+        raw = nc_lines[i - 1]
 
-        if SMART_QUOTES_RE.search(raw):
+        if SMART_QUOTES_RE.search(code):
             add(i, "E017", "error", "smart quotes in code — will not parse")
-        if EN_DASH_RE.search(raw) and literals and not comment.strip():
-            add(i, "W017", "warn", "en/em dash inside a string literal — Entra operation names with dashes/trailing spaces need `has`, not `==`")
-        if re.search(r"\bago\(\s*\d+\s*(hr|hrs|min|mins|sec|days?|hours?|minutes?)\s*\)", code):
+        if EN_DASH_RE.search(raw) and re.search(r'\bOperationName\s*==', code):
+            add(i, "W017", "warn", "verify the exact OperationName against observed values; punctuation is significant")
+        if re.search(r"\bago\(\s*\d+\s*(hr|hrs|mins|days?|hours?|minutes?)\s*\)", code):
             add(i, "E017", "error", "invalid timespan literal in ago() — use 1h / 10m / 7d")
         if re.search(r"\bwhere\b[^|]*?[^=!<>]=[^=~][^|]*", code) and not re.search(r"\b(extend|project|summarize|let)\b", code):
             add(i, "E017", "error", "single `=` in a where clause — comparison needs `==`")
@@ -198,7 +203,7 @@ def lint_query(text: str, platform: str = "auto", hunt: bool = False):
             add(i, "W018", "warn", "`contains` on ActionType (enum column) — use `==` / `in`")
         if re.search(r"\b%s\s+has_any\s*\(" % IDENTIFIER_COLS, code):
             add(i, "W019", "warn", "`has_any` on an identifier column — use `in`/`in~` (exact, cheaper, no partial-token matches)")
-        if re.search(r"\b(FileName|InitiatingProcessFileName|InitiatingProcessParentFileName|ProcessVersionInfoOriginalFileName)\s*(==|in)\s*\(?\s*@?[\"']", raw) and not re.search(r"\b(FileName|InitiatingProcessFileName|InitiatingProcessParentFileName|ProcessVersionInfoOriginalFileName)\s*(=~|in~)", raw):
+        if re.search(r"\b(FileName|InitiatingProcessFileName|InitiatingProcessParentFileName|ProcessVersionInfoOriginalFileName)\s*(==|in\b)", code) and re.search(r"\b(FileName|InitiatingProcessFileName|InitiatingProcessParentFileName|ProcessVersionInfoOriginalFileName)\s*(==|in)\s*\(?\s*@?[\"']", raw) and not re.search(r"\b(FileName|InitiatingProcessFileName|InitiatingProcessParentFileName|ProcessVersionInfoOriginalFileName)\s*(=~|in~)", code):
             add(i, "W016", "warn", "case-sensitive `==`/`in` on a file-name column — MDE keeps on-disk casing; use `=~` / `in~`")
 
         pos = re.findall(r"\b[A-Za-z_]\w*(?:\.\w+)?\[(\d+)\]\s*(?:\.|\[\s*[\"'])", code) + re.findall(r"\b(?:TargetResources|Parameters|AdditionalDetails|modifiedProperties|ModifiedProperties|Entities)\s*\)?\s*\[(\d+)\]", code)
@@ -220,13 +225,12 @@ def lint_query(text: str, platform: str = "auto", hunt: bool = False):
         if re.search(r"\+\s*\d+h\b", code) and re.search(r"(hourofday|dayofweek|LocalTime)", full_code) and "datetime_utc_to_local" not in full_code:
             add(i, "W024", "warn", "fixed UTC offset for local-time logic — DST-wrong; use datetime_utc_to_local()")
 
-        if re.search(r"\b(where|extend)\s+\w+\s*==\s*[\"']\d+[\"']", code) and re.search(r"\b(RemotePort|LocalPort|EventID|IsExploitAvailable|IsInternetFacing|ErrorCode|ProcessId)\s*==\s*[\"']\d+[\"']", raw):
+        if re.search(r"\b(where|extend)\s+\w+\s*==", code) and re.search(r"\b(RemotePort|LocalPort|EventID|IsExploitAvailable|IsInternetFacing|ErrorCode|ProcessId)\s*==\s*[\"']\d+[\"']", raw):
             add(i, "W025", "warn", "string literal compared to a numeric/bool column — use a typed literal")
 
     # magic numbers (info only): numeric comparisons not expressed via a let
     if not hunt:
-        for i, raw in enumerate(lines, start=1):
-            code, _, _ = strip_strings_and_comments(raw)
+        for i, code in enumerate(code_lines, start=1):
             if re.match(r"\s*let\b", code):
                 continue
             for m in re.finditer(r"\bwhere\b[^|]*?\b([A-Za-z_]\w*)\s*(>=|<=|>|<)\s*(\d{2,})\b", code):

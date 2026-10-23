@@ -9,7 +9,7 @@ official content. Each line is a review item. Performance rules live in `kql-per
 |---|---|---|
 | `join` with no `kind=` | `innerunique` dedups the left side by key — on `NetworkMessageId` (many URLs/attachments per mail), hash→network, CVE→KB it silently drops evidence. The single most frequent defect found (≈130 files in Azure-Sentinel, ≈100 in community sets). | Always `kind=inner/leftouter/leftanti/...`; comment when `innerunique` is deliberate ("one match per IOC") |
 | `has_any (list)` on identifier columns (`DeviceId`, `AccountSid`, `FileName`) | Term-tokenises both sides; slower and matches partial tokens | `in` / `in~` for exact identifiers; `has_any` for terms inside free text |
-| `has` / `has_any` terms ≤ 3 chars (`"-e"`, `"cl"`, `"sql"`, `"@"`) | No term index → scan; `has_all ("-password", "*")` — `"*"` is not a term, the predicate is empty | ≥ 4-char terms, or `FileName`-anchored logic |
+| `has` / `has_any` terms of 1–2 chars (`"-e"`, `"cl"`, `"@"`); 3-char terms (`"sql"`) are indexed per Kusto docs but discouraged by the Defender best-practices page | No term index → scan; `has_all ("-password", "*")` — `"*"` is not a term, the predicate is empty | 4+ char terms where possible, or `FileName`-anchored logic |
 | `contains` on enum columns (`ActionType contains "Inspected"`) | Substring scan on a low-cardinality column | `==` / `in` / `has` |
 | `FileName == "net.exe"` | MDE preserves on-disk casing; installers and attackers vary it | `=~` / `in~` for file names; `==` only for producer-controlled enums |
 | `in` is case-sensitive | `RemoteUrl in ("Mega.nz")` never matches `mega.nz` | `in~`, or `tolower()` both sides |
@@ -78,9 +78,10 @@ available). Treat the second variant as a generated artefact: lint and parse **b
 - `svchost` command lines: the first argument after `-p` is redacted (`**`).
 - `FolderPath` for `CreateRemoteThreadApiCall` lacks the file name (unlike other DeviceEvents).
 - Domain controllers without MDI: `DeviceNetworkEvents | where LocalPort == 88 and LocalIPType == "FourToSixMapping" | distinct DeviceId`.
-- `DeviceTvm*` / `OAuthAppInfo` have no `Timestamp`/`ReportId`: bridge with
+- `DeviceTvm*` tables have no `Timestamp`/`ReportId`: bridge device-keyed rows with
   `DeviceInfo | summarize arg_max(Timestamp, *) by DeviceId` (carries `ReportId`) — not a random
-  `DeviceProcessEvents` join.
+  `DeviceProcessEvents` join. `OAuthAppInfo` and graph tables have no `DeviceId`, so this bridge does
+  not apply; use their own identifiers and validate the alert's provenance.
 - `AADManagedIdentitySignInLogs` lacks `SignInIpAddress`; `ADFSSignInLogs` lacks `SessionId`.
 - AppLocker emits PE256, not SHA256.
 - A WDAC **audit** policy can be deployed purely to generate DLL-load telemetry

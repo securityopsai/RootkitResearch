@@ -9,10 +9,10 @@ are in `kql-gotchas.md`.
 
 | Do | Instead of | Why |
 |----|-----------|-----|
-| `has` | `contains` | `has` uses the term index; `contains` is a substring scan |
+| `has` (whole-term match) | `contains` (substring) | `has` uses the term index; `contains` scans. Choose the semantics first: `"KustoExplorerQueryRun" has "Explorer"` is false, `contains` is true |
 | `has_cs`, `==` | `has`, `=~` | Case-sensitive operators skip case folding — cheaper and more specific |
 | `in` / `has_any` with a list | chained `or` clauses | Single indexed pass |
-| terms of 4+ chars | 3-char-or-shorter terms | Terms ≤3 characters are NOT indexed → full scan |
+| terms of 3+ chars (4+ to be safe) | 1–2 char terms | The Kusto term index holds terms of 3+ characters (`datatypes-string-operators`); shorter terms scan. The Defender advanced-hunting best-practices page still says to avoid terms of 3 or fewer — prefer a longer anchor when one exists |
 
 - **`in` / `in~` for exact identifiers** (`DeviceId`, `AccountSid`, `FileName`, hashes, IPs); `has_any`
   is for terms inside free text. `has_any` on an identifier list tokenises both sides and can match

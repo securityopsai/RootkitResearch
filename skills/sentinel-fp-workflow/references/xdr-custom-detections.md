@@ -7,7 +7,9 @@ you lint for them (see detection-as-code.md).
 
 ## Required Columns
 
-Every custom detection query MUST return:
+Microsoft phrases these as recommended; in practice they decide whether the alert gets the right
+device-group scope, a process tree and a timeline, so treat them as the contract. Every custom
+detection query should return, from the same original event:
 
 | Table type | Required |
 |-----------|----------|
@@ -26,9 +28,10 @@ DeviceEvents
 
 - Use `arg_min(Timestamp, ReportId)` instead when the alert should point at the **first** event
   of a flow (sign-in flow by `CorrelationId`, first-seen logic).
-- Tables without `Timestamp`/`ReportId` (`DeviceTvm*`, `OAuthAppInfo`, `ExposureGraph*`): bridge
-  with `DeviceInfo | summarize arg_max(Timestamp, *) by DeviceId | project DeviceId, Timestamp, ReportId`
-  (DeviceInfo carries `ReportId`) — not a throw-away join to `DeviceProcessEvents`.
+- Device-keyed tables without `Timestamp`/`ReportId` (`DeviceTvm*`): bridge with
+  `DeviceInfo | summarize arg_max(Timestamp, *) by DeviceId | project DeviceId, Timestamp, ReportId`
+  (DeviceInfo carries `ReportId`) — not a throw-away join to `DeviceProcessEvents`. `OAuthAppInfo` and
+  `ExposureGraph*` have no `DeviceId`; use their own identifiers and validate alert provenance.
 - Community XDR queries almost never carry the required columns (≈3 % of files); any
   "import from community repo" step needs an automatic required-column fix-up.
 

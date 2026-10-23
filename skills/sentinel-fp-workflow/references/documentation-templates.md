@@ -3,8 +3,9 @@
 ## Detection Specification (one per rule; lives next to the query)
 
 Derived from the most complete public write-up format (FalconForce "Falcon Friday", 13 sections,
-every rule) plus fields other high-quality repos add. Sections are mandatory; "None expected." is
-written explicitly, never left blank.
+every rule) plus fields other high-quality repos add. Sections are mandatory. Write "None expected."
+only after assessing; where evidence is missing write "Not yet assessed" and the specific gap. Never
+substitute "None expected" for unknown coverage.
 
 ```markdown
 # <Rule ID> — <Title>
@@ -252,8 +253,8 @@ Standard format for FP exclusion watchlist entries.
 | AddedDate | datetime | When added to list |
 | AddedBy | string | Analyst who added |
 | Justification | string | Why this is excluded |
-| ExpiryDate | datetime | When to review (null = permanent) |
-| RuleScope | string | Which rules this applies to (* = all) |
+| ExpiryDate | datetime | Exclusion valid only before this UTC timestamp; the generated patterns treat null/invalid/expired as inactive (fail closed) |
+| RuleScope | string | Exact rule ID, or `*` as an explicit global scope |
 | TicketRef | string | Related ticket/incident ID |
 | Activity (optional) | string | Rule-scope key when one generic exclusion list serves many rules (`SecretRetrieval`, `CommonUserASN`); `-` = wildcard |
 | Notes (optional) | string | Bracketed tags rules can filter on: `[App]`, `[HomeTenant]`, `[VPN]`, `[Success]` |

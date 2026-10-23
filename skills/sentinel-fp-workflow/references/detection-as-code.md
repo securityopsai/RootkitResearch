@@ -73,7 +73,7 @@ incidentConfiguration:
     matchingMethod: Selected
     groupByEntities: [Account, Host]
 suppressionDuration: 5h
-suppressionEnabled: false
+suppressionEnabled: false           # pauses the WHOLE rule for suppressionDuration after an alert; not per-entity dedup
 ```
 
 Entity-mapping discipline (official content ships ≥ 24 broken mappings — lint it):
@@ -132,7 +132,7 @@ and enforce it, silent drift is the failure mode.
    valid and unique; `version` well-formed (`l.0.0` typos ship); hunts carry no scheduling fields;
    `queryFrequency <= queryPeriod <= 14d`; no zero-overlap `TimeGenerated` window; XDR
    frequency/lookback pair valid; NRT restriction check if continuous; **bare `join` is an error**;
-   unbounded `make_set`; `has`/`contains` terms ≤ 3 chars; positional dynamic indexing; `materialize`
+   unbounded `make_set`; `has`/`contains` terms under 3 chars (3-char terms flagged as info); positional dynamic indexing; `materialize`
    on single-reference lets; `prev()` without partitioned `order by`; `search`/`union *`/`take`;
    tenant placeholders; `TimeGenerated` in an XDR block / `Timestamp` in a Sentinel block; both
    platform variants parsed (dual copies drift in ≈5 % of files); exact-string Entra operation names.
@@ -146,7 +146,9 @@ and enforce it, silent drift is the failure mode.
 
 Core insight: a KQL detection is a pure function of its input tables. Substitute the
 real table with an inline `datatable` of synthetic events (a `let` with the table's
-name shadows the real table), pin `now()` to a fixed timestamp, execute, assert.
+name shadows the real table), pin `now()` and `ago()` to a fixed timestamp, model ingestion timestamps
+explicitly (`__ingestion_time` column per row when the query uses `ingestion_time()`; the harness refuses
+to invent one), execute, assert. Emission alone is not a passing test.
 
 ```kql
 let query_now = datetime(2026-07-21T12:00:00Z);
@@ -216,6 +218,8 @@ regression test that proves you didn't create a detection gap.
      | join kind=leftanti (_Expected | where isempty(Resource))    on ActorId, Operation             // generic rows
      ```
      `tostring()` every watchlist column — `_GetWatchlist` returns dynamic and joins fail silently on type.
+     The generated patterns read `RuleScope`/`ExpiryDate` with `column_ifexists()` and **fail closed** on
+     expiry: a missing, invalid or past `ExpiryDate` excludes nothing; `RuleScope` `*` is an explicit global scope.
    - Watchlists are also **dictionaries** (result codes with `[Success]` tags → `toscalar(make_list(ResultType))`),
      **regex sources** (`strcat(@'^(', strcat_array(RegEx, '|'), @')$')`), **operational SLOs**
      (expected ingestion delay per table → `query_wait` and health rules), **monitored assets**

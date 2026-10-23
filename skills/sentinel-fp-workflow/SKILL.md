@@ -6,7 +6,9 @@ description: KQL detection engineering and threat hunting for Microsoft Sentinel
 # KQL Detection Engineering, Hunting & FP Workflow
 
 Detection engineering and hunting for Microsoft Sentinel and Defender XDR, quality-first. This
-file is the router and the core workflows; depth lives in `references/`.
+file is the router and the core workflows; depth lives in `references/`. Examples are starting points,
+not evidence of tenant readiness; distinguish vendor requirements from repository conventions; the
+skill writes rules, tests and documents, it does not deploy or take response actions.
 
 ## Reference Routing
 
@@ -27,7 +29,9 @@ Scripts:
   (bare `join`, unbounded `make_set`, short terms, positional indexing, platform column drift,
   zero-overlap windows, placeholders, full-sample `has_all`). Run on every `.kql` and on each
   ` ```kql ` block of a `.md`; `--selftest` to verify.
-- `scripts/kql_test_harness.py` — build unit-test queries from fixtures (datatable substitution, pinned `now()`), emit or run.
+- `scripts/kql_test_harness.py` — build unit-test queries from fixtures (datatable substitution, pinned `now()`/`ago()`, explicit `__ingestion_time` fixture column when the query uses `ingestion_time()`), emit or run. Emission is not a passing test; the query still needs a KQL engine.
+- `scripts/kql_text.py` — string/comment-aware lexical helper shared by the lint and the harness; not a KQL parser.
+- `tests/test_helpers.py` — offline regression tests for the scripts: `python3 -B -m unittest discover -s tests -v` from the skill directory.
 - `scripts/kql_fp_patterns.py` — generate tuned KQL snippets: exclusions, windows, baselines, flow fingerprints, bridges.
 
 ## Detection Authoring Quality Gates
@@ -58,8 +62,9 @@ Every new or modified rule must pass ALL gates before deploy. A failed gate is a
    lookalike, threshold boundary (n-1 / n / n+1), empty input; one fixture set per platform variant.
    Use `scripts/kql_test_harness.py`; lint first with `scripts/kql_lint.py`.
 8. **Documented** — detection specification per `references/documentation-templates.md` incl.
-   data sources with ActionType, permission required, **blind spots** (write "None expected."
-   explicitly), precision/coverage statement, version history with impact; PR-reviewed.
+   data sources with ActionType, permission required, **blind spots** (write "None expected." only
+   after assessing; otherwise "Not yet assessed" plus the gap), precision/coverage statement,
+   version history with impact; PR-reviewed. Never invent a measured precision rate.
 9. **Response actions earn their precision** — any rule wired to isolate/purge/disable states a
    measured TP rate and a kill switch.
 
@@ -76,8 +81,9 @@ Every new or modified rule must pass ALL gates before deploy. A failed gate is a
    two-stage anomaly, `scan` sequences, flow fingerprint, threshold newly crossed, graph paths, TI).
 6. Promote with the checklist in `references/hunting-patterns.md` §5 — windows, thresholds,
    per-entity collapse, watchlists, dedup, blind spots, rewritten description. Hunt YAML carries
-   **no** severity or scheduling fields; ep3p's rule: same query is a hunt when
-   `query_frequency == query_period`, a detection when `<`.
+   **no** severity or scheduling fields. ep3p's convention (same function is a hunt when
+   `query_frequency == query_period`, a detection when `<`) is a useful design habit, not a platform
+   rule: a scheduled detection may legitimately have equal frequency and period.
 
 ## FP Triage Process
 
@@ -99,7 +105,7 @@ Every new or modified rule must pass ALL gates before deploy. A failed gate is a
 | Vendor/tool noise | Automation rule auto-close, or BTP tag | Low |
 | Data quality (nulls, three spellings of empty) | Fix at source or null handling | High |
 | Scheduled tasks / maintenance | Time-based exclusion (`datetime_utc_to_local`) or BTP | Medium |
-| Duplicate alerts across runs | Grouping/suppression (Sentinel) or dedup key (XDR) — not a query change | Low |
+| Duplicate alerts across runs | Stable event/entity keys + run window (XDR dedup key; Sentinel incident grouping). Sentinel `suppressionEnabled` pauses the *whole rule*, not one entity — use it only when that coverage loss is intended | Low–Medium |
 | Missed events / late alerts | Ingestion-delay window (`ingestion_time()`), `query_wait` | Medium |
 | Quiet entity alerts on 1 → 2 | Floor the threshold; absolute floor beside anomaly sensitivity | Low |
 

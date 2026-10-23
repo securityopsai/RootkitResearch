@@ -12,18 +12,25 @@ import sys
 
 PATTERNS = {
     "watchlist_exclude": {
-        "description": "Exclude entities via watchlist lookup (Sentinel)",
+        "description": "Exclude exact entities using an unexpired, rule-scoped watchlist (Sentinel)",
         "template": """let Excluded = _GetWatchlist('{watchlist_name}')
-| project Entity = tolower(tostring({entity_field}));   // _GetWatchlist columns are dynamic: cast or the !in never matches
+| extend _Expiry = todatetime(column_ifexists("ExpiryDate", "")),
+         _Scope = tostring(column_ifexists("RuleScope", "")),
+         _Type = tostring(column_ifexists("EntityType", "{entity_type}"))
+| where isnotnull(_Expiry) and _Expiry > now()          // fail closed: a missing, invalid or past expiry never excludes
+| where _Scope in ("{rule_scope}", "*") and _Type =~ "{entity_type}"
+| project Entity = tolower(tostring({entity_field}))
+| where isnotempty(Entity);
 {base_table}
-| where tolower({target_field}) !in (Excluded)""",
-        "params": ["watchlist_name", "entity_field", "base_table", "target_field"]
+| where tolower(tostring({target_field})) !in (Excluded)""",
+        "params": ["watchlist_name", "entity_field", "base_table", "target_field", "rule_scope", "entity_type"],
+        "notes": "Schema per documentation-templates.md (Entity, EntityType, RuleScope, ExpiryDate). Columns are read with column_ifexists so a simpler watchlist still parses, but without ExpiryDate nothing is excluded — by design. RuleScope '*' is an explicit global scope."
     },
 
     "time_window": {
         "description": "Exclude events during maintenance windows",
         "template": """| where not(
-    dayofweek(TimeGenerated) in ({excluded_days})
+    toint(dayofweek(TimeGenerated) / 1d) in ({excluded_days})
     and hourofday(TimeGenerated) between ({start_hour} .. {end_hour})
 )""",
         "params": ["excluded_days", "start_hour", "end_hour"]
@@ -37,24 +44,28 @@ PATTERNS = {
     },
 
     "null_safe": {
-        "description": "Filter out null/empty/placeholder values",
-        "template": """| where isnotempty({field})
-    and {field} !in ("-", "N/A", "none", "[]")   // Entra data spells "empty" three ways
-    and {field} != "SYSTEM"
-    and {field} !startswith "$"  // service accounts""",
+        "description": "Filter null/empty values only; retains SYSTEM and service accounts",
+        "template": """| where isnotempty({field})""",
         "params": ["field"]
     },
 
+    "entra_empty_safe": {
+        "description": "Null/empty handling for Entra sign-in fields, where 'empty' is spelled three ways (\"\", \"[]\", \"none\")",
+        "template": """| where isnotempty({field}) and {field} !in ("[]", "none")   // Sentinel SigninLogs: RiskEventTypes = "[]", RiskLevelDuringSignIn = "none"; XDR: genuinely empty""",
+        "params": ["field"],
+        "notes": "Use on RiskLevelDuringSignIn / RiskEventTypes / RiskState and similar; plain isnotempty() misses the string spellings."
+    },
+
     "process_exclude": {
-        "description": "Exclude known-good processes by path/hash",
+        "description": "Exclude explicit values of a chosen process field using exact matching",
         "template": """let TrustedProcesses = dynamic([
     @"{process_1}",
     @"{process_2}"
 ]);
 {base_table}
-| where not(ProcessName has_any (TrustedProcesses))
-    and not(ProcessPath has_any (TrustedProcesses))""",
-        "params": ["process_1", "process_2", "base_table"]
+| where tostring({process_field}) !in~ (TrustedProcesses)""",
+        "params": ["process_1", "process_2", "base_table", "process_field"],
+        "notes": "Choose a verified field such as FolderPath or SHA1. Paths/names alone do not establish trust; scope and review the exclusion."
     },
 
     "ip_range_exclude": {
@@ -127,7 +138,7 @@ let known = {base_table}
     },
 
     "ingestion_window": {
-        "description": "Sentinel scheduled-rule window that handles ingestion delay (no gaps, no duplicates)",
+        "description": "Sentinel scheduled-rule ingestion window; validate delay budget and scheduler behavior",
         "template": """let ingestion_delay = {ingestion_delay};   // measured p90 for this table
 let rule_look_back = {rule_look_back};     // == queryFrequency; queryPeriod must cover delay + look_back
 {base_table}
@@ -159,7 +170,7 @@ let Baseline = {base_table}
         "description": "Sign-in flow fingerprint: result-code set per CorrelationId, alert on the first event",
         "template": """let flows = {signin_table}
 | where {time_col} > ago({lookback})
-| summarize Codes = make_set({code_col}), IPs = make_set({ip_col}, 10) by CorrelationId, {user_col}
+| summarize Codes = make_set({code_col}, 100), IPs = make_set({ip_col}, 10) by CorrelationId, {user_col}
 | where Codes has_all ({code_list});
 {signin_table}
 | where {time_col} > ago({lookback})
@@ -180,16 +191,19 @@ let Baseline = {base_table}
     "scoped_watchlist_exclusion": {
         "description": "One generic exclusion watchlist keyed by rule scope; specific and generic rows via two leftanti joins",
         "template": """let _Expected = _GetWatchlist('{watchlist_name}')
-    | where Activity == "{activity_scope}"
+    | extend _Expiry = todatetime(column_ifexists("ExpiryDate", "")), _Scope = tostring(column_ifexists("RuleScope", ""))
+    | where isnotnull(_Expiry) and _Expiry > now()          // fail closed on expiry
+    | where _Scope in ("{rule_scope}", "*") and tostring(Activity) == "{activity_scope}"
     | project {actor_col} = tostring(ActorId), {resource_col} = tostring(DestinationResource), {op_col} = tostring(Auxiliar);
 {base_table}
 | join kind=leftanti (_Expected | where isnotempty({resource_col})) on {actor_col}, {op_col}, {resource_col}   // specific rows
 | join kind=leftanti (_Expected | where isempty({resource_col}))    on {actor_col}, {op_col}                   // generic (wildcard) rows""",
-        "params": ["watchlist_name", "activity_scope", "actor_col", "resource_col", "op_col", "base_table"]
+        "params": ["watchlist_name", "activity_scope", "actor_col", "resource_col", "op_col", "base_table", "rule_scope"],
+        "notes": "Requires explicit RuleScope and future ExpiryDate. Empty resource is an intentional wildcard; test its coverage impact."
     },
 
     "tvm_bridge": {
-        "description": "XDR: give a DeviceTvm*/OAuthAppInfo query the Timestamp/ReportId it lacks via DeviceInfo",
+        "description": "XDR: enrich a device-keyed TVM query with DeviceInfo event identifiers",
         "template": """let Bridge = DeviceInfo
     | summarize arg_max(Timestamp, ReportId) by DeviceId
     | project DeviceId, Timestamp, ReportId;
@@ -242,10 +256,10 @@ let threshold = {threshold};
     "env_filter_fence": {
         "description": "Fenced environment-specific tuning region with pre-written OPTION lines (survives upstream updates)",
         "template": """// Begin environment-specific filter.
-// OPTION 1: | where not({entity_col} in ((_GetWatchlist('{watchlist_name}') | project tostring({watchlist_col}))))
-// OPTION 2: | where not({entity_col} has_any ({inline_list}))
+// OPTION 1: | where not({entity_col} in ((_GetWatchlist('{watchlist_name}') | where tostring(RuleScope) == "{rule_scope}" and todatetime(ExpiryDate) > now() | project tostring({watchlist_col}))))
+// OPTION 2: | where {entity_col} !in~ ({inline_list}) // explicit, reviewed exact-value exclusion
 // End environment-specific filter.""",
-        "params": ["entity_col", "watchlist_name", "watchlist_col", "inline_list"]
+        "params": ["entity_col", "watchlist_name", "watchlist_col", "inline_list", "rule_scope"]
     },
 
     "local_time_window": {

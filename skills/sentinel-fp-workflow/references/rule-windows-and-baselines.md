@@ -30,8 +30,10 @@ CommonSecurityLog
 | where TimeGenerated >= ago(ingestion_delay + rule_look_back)   // wide scan on event time
 | where ingestion_time() > ago(rule_look_back)                   // exact run window on ingestion time
 ```
-Each event belongs to exactly one run: no gaps, no duplicates. The `queryPeriod` must cover
-`ingestion_delay + rule_look_back`.
+The intended ingestion slices do not overlap, so under normal operation each event belongs to one run.
+This is not an exactly-once guarantee: scheduler jitter, retries, null ingestion timestamps and delays
+beyond the event-time scan can still produce gaps or repeats — test those cases. The `queryPeriod` must
+cover `ingestion_delay + rule_look_back`.
 
 **Sentinel (ep3p form) — explicit wait so the run looks at a settled slice:**
 ```kql
@@ -62,7 +64,7 @@ Sentinel also pre-filters to `queryPeriod`; an in-query `ago()` is only for sub-
 union withsource=_Type *                                   // health hunt only, not a rule body
 | where ingestion_time() > ago(1d)
 | extend Delay = ingestion_time() - TimeGenerated
-| summarize p50=percentile(Delay, 50), p90=percentile(Delay, 90), p99=percentile(Delay, 99) by Type
+| summarize p50=percentile(Delay, 50), p90=percentile(Delay, 90), p99=percentile(Delay, 99) by _Type
 ```
 Store the expected delay per table in a watchlist (`DataType-IngestedTables`: Type, Critical,
 Frequency, DelayType, IngestionDelay) and use the same number to set `query_wait` **and** to
@@ -105,8 +107,11 @@ on mirrored Device*/Email* tables.
 ## 5. Deduplication across overlapping runs
 
 - **Sentinel**: `eventGroupingSettings: AlertPerResult` + `incidentConfiguration.groupingConfiguration`
-  (`matchingMethod: Selected`, `groupByEntities`, `lookbackDuration: 5h`) + `suppressionDuration`.
-  Hand-rolled dedup against `SecurityAlert` custom details is double infrastructure here.
+  (`matchingMethod: Selected`, `groupByEntities`, `lookbackDuration: 5h`) folds related alerts into one
+  incident; it does not remove duplicate alerts. `suppressionEnabled` + `suppressionDuration` pause the
+  **whole rule** after an alert, unrelated entities included — use only when that coverage loss is
+  intended. Duplicate alerts are avoided by the run window (§2) and stable entity keys; hand-rolled
+  dedup against `SecurityAlert` custom details must account for alert-table delay and replays.
 - **XDR**: the platform dedups identical entity + custom-detail values within a run and across
   overlapping lookbacks. Make the dedup key explicit: define `DedupFields` next to the output
   projection and re-validate it whenever columns change (a FalconFriday dedup block broke when the
