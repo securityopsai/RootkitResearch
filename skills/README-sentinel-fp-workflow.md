@@ -1,78 +1,93 @@
-# sentinel-fp-workflow: a KQL detection-engineering skill for Sentinel and Defender XDR
+# sentinel-fp-workflow, or: Why Your Detection Rule Doesn't Do What You Think It Does
 
-`sentinel-fp-workflow` is a Claude skill for people who write, review and tune KQL detections
-and hunting queries on Microsoft Sentinel and Microsoft Defender XDR. Loaded, it changes how
-Claude approaches a KQL task: instead of producing a plausible query from memory, it works
-through a fixed set of quality gates, pulls in platform facts that are easy to get wrong, lints
-its own output and leaves behind a rule document a reviewer can act on.
+Here's a thing nobody tells you about security detection rules. Most of them are not detecting
+anything. They are *scheduled*. There's a difference. A rule that runs every hour and looks at
+the last hour of data, on a platform that delivers data forty minutes late, is not a detection.
+It's a ritual. Somebody wrote it, somebody deployed it, somebody put it in a slide, and the
+attacker walked through the gap at minute forty-one. Everybody feels protected. Nobody is.
 
-## What it does
+`sentinel-fp-workflow` is a Claude skill for the people who write KQL detections and hunting
+queries on Microsoft Sentinel and Defender XDR, and who would prefer that the rules actually fire.
+Load it, and Claude stops free-associating KQL from memory and starts behaving like the one
+senior engineer on the team who has read the documentation, read it again, and keeps a list.
 
-The skill covers the full life of a detection:
+## What it actually does
 
-- **Authoring.** Nine quality gates every rule must pass before deployment: a stated intent
-  mapped to the behaviour the predicate asserts, entity-level alerting, windows that match the
-  schedule, hoisted and explained tunables, a performance and semantics review, the platform
-  contract (entity mappings for Sentinel; `Timestamp`, `ReportId`, `DeviceId` for XDR), unit
-  tests with fixtures, a detection specification with blind spots, and a measured precision bar
-  for anything wired to a response action.
-- **Hunting.** A hunt is treated as a different artefact from a detection. The skill gives a
-  hunt header template, a funnel method (population statistics, derived attribute, shortlist,
-  enrichment, DFIR hand-off), a workflow for turning a threat report into a pack of narrow
-  queries, a catalogue of reusable patterns (first-seen with a guard gap, two-tier prevalence,
-  beaconing, two-stage anomaly, `scan` sequences, flow fingerprinting, threshold newly crossed,
-  graph paths, threat-intelligence matching) and a checklist for promoting a hunt to a rule.
-- **Scheduling and windows.** The most common silent failure in real rule repositories is a
-  window that does not match how the platform runs the query. The skill prescribes the
-  ingestion-delay form for Sentinel, explains that XDR evaluates its lookback on ingestion time,
-  and covers baseline guard gaps, floors, poisoning and deduplication across runs.
-- **False-positive triage.** A classification process (true positive, benign true positive,
-  false positive), a fix-selection matrix that prefers data changes over rule redeploys, a
-  seed taxonomy of known benign generators, and templates for change records and client reports.
+**It refuses to let a rule out the door without passing nine gates.** State what attacker
+behaviour this catches, in one sentence, mapped to the MITRE technique the *predicate* asserts.
+Not "T1059 because it's a command line." That's not a mapping, that's a horoscope. Alert on the
+entity the analyst investigates, not one alert per raw row, because an analyst with 400 alerts
+for one laptop is not investigating, he's scrolling. Hoist every threshold into a `let` and say
+what false positive it trades against. Make the query's windows match the schedule the platform
+will actually run it on. Carry the columns the platform needs. Write the unit tests. Write the
+blind spots. And if you wire the rule to isolate a machine, you'd better have a measured
+precision rate, not a feeling.
 
-## Components
+**It treats hunting as a different animal.** A hunt is a question with a time picker. A
+detection is a promise with a schedule. People keep confusing the two, which is how a 7-day
+beaconing hunt ends up pasted into an hourly rule with a 4-hour lookback, where its "more than
+12 hours of activity" condition can never be true. The skill has a catalogue of hunting patterns
+that work (first-seen with a guard gap, two-tier prevalence, three beaconing algorithms, two-stage
+anomaly, `scan` sequences, flow fingerprinting), a method for turning a threat report into a pack
+of narrow queries, and a checklist for promoting a hunt into a rule without carrying the hunt's
+bad habits along for the ride.
 
-The skill is a router plus references plus scripts, loaded progressively so only the relevant
-part enters context.
+**It knows the things the platform won't tell you until it's too late.** Defender XDR evaluates
+the lookback on ingestion time, so your helpful `Timestamp > ago(1h)` filter is quietly throwing
+away the late events the platform just went to the trouble of keeping. A bare `join` in KQL is
+`innerunique`, which deduplicates your left side and drops evidence, silently, which is the
+worst kind of dropping. `has` on a two-character term isn't indexed. Entra spells "empty" three
+different ways. `FileName == "net.exe"` misses `NET.EXE`. `TargetResources[2].displayName` works
+right up until Microsoft reorders the array. None of this is secret. All of it is in the
+documentation. Nobody reads the documentation. The skill read it for you.
 
-| Component | Purpose |
+**It handles false positives like a process instead of a mood.** Classify, root-cause, pick a fix
+that doesn't require redeploying the rule when the fix is data, write it down, re-run the
+true-positive fixture to prove you didn't just tune away the detection along with the noise.
+There's a seed list of the usual benign suspects, because the MDI sensor has set off more SMB
+alerts than any attacker in history.
+
+## The parts
+
+| Component | What it's for |
 |---|---|
-| `SKILL.md` | Router and core workflows: quality gates, hunting workflow, FP triage, fix matrix, quick-reference patterns, validation checklist |
-| `references/kql-performance.md` | Operator choice, filter order, join hygiene, command-line matching discipline, output shaping, review checklist |
-| `references/kql-gotchas.md` | Operator semantics that produced real bugs, the XDR-versus-Sentinel delta table, telemetry facts (sampling, new ActionTypes), table and column churn |
-| `references/rule-windows-and-baselines.md` | Rule contract in KQL, ingestion delay, per-table delay as data, baseline windows, dedup, time handling |
-| `references/hunting-patterns.md` | Hunt-versus-detection contract, hunt header, methodologies, pattern catalogue, promotion checklist, IR query packs |
-| `references/identity-email-patterns.md` | Entra result-code classification, flow fingerprints, token replay, audit-log parsing by name, MDO join discipline |
-| `references/xdr-custom-detections.md` | Required columns, frequency and lookback pairs, the 150-alert cap, NRT restrictions, XDR-only functions, auditing the platform itself |
-| `references/detection-as-code.md` | Repository layout, full Sentinel YAML contract, CI gates and lint list, fixture-based unit testing, watchlists, functions, summary rules |
-| `references/documentation-templates.md` | Detection specification with mandatory blind spots, hunt header, report-pack page, change record, FP worksheet, watchlist schema |
-| `scripts/kql_lint.py` | Static checks for the defect classes found most often in public rule repositories: bare `join`, unbounded `make_set`, short terms, positional indexing, platform column drift, self-inflicted window filters, placeholders, full-sample `has_all` |
-| `scripts/kql_test_harness.py` | Builds unit-test queries by shadowing tables with inline `datatable` fixtures and pinning `now()`; emits or runs them |
-| `scripts/kql_fp_patterns.py` | Generates 22 parameterised snippets: exclusions, ingestion windows, first-seen baselines, floors, flow fingerprints, TVM bridges, anomaly stages, tuning fences |
-| `evals/` | Five test cases with prompts, input files and assertions for regression testing the skill (kept in the repository, not in the packaged skill) |
+| `SKILL.md` | The router. Quality gates, hunting workflow, triage process, fix matrix, checklist. |
+| `references/kql-performance.md` | Which operator, in which order, and why your join is slow and wrong. |
+| `references/kql-gotchas.md` | Operator semantics that have bitten real people, XDR-versus-Sentinel deltas, telemetry facts, tables that got renamed while you weren't looking. |
+| `references/rule-windows-and-baselines.md` | Ingestion delay, run windows, baseline guard gaps, floors, dedup across runs. The ritual-versus-detection chapter. |
+| `references/hunting-patterns.md` | Hunt versus detection, the hunt funnel, threat report to hunt pack, the pattern catalogue, promotion checklist. |
+| `references/identity-email-patterns.md` | Entra result codes that mean "the password was right, actually", flow fingerprints, token replay, parsing audit logs by name instead of by position. |
+| `references/xdr-custom-detections.md` | Required columns, frequency and lookback pairs, the 150-alert cap, NRT restrictions, functions that only exist on one side of the fence. |
+| `references/detection-as-code.md` | Repo layout, the full Sentinel YAML contract, the CI lint list, fixture tests, watchlists, summary rules. |
+| `references/documentation-templates.md` | A detection specification where "blind spots" is mandatory and "None expected." has to be typed out loud. |
+| `scripts/kql_lint.py` | Catches the defects that show up most in real repositories: bare joins, unbounded `make_set`, short terms, positional indexing, the wrong time column for the platform, placeholder strings somebody forgot to replace. |
+| `scripts/kql_test_harness.py` | Shadows real tables with inline fixtures and pins the clock, so a detection can be tested like the pure function it is. |
+| `scripts/kql_fp_patterns.py` | Twenty-two parameterised snippets for the things you keep retyping. |
+| `evals/` | Five regression tests. Lives in the repo, not in the package. |
 
-## Where the content comes from
+## Where it came from
 
-The references were distilled from a review of roughly 5,000 hunting queries and detection
-rules in 24 public repositories, including the Azure-Sentinel repository, FalconForce's Falcon
-Friday, Cyb3r-Monk, ep3p, Bert-JanP, reprise99, HybridBrothers and SecurityAura. The review
-counted defects as well as good patterns: a bare `join` appeared in about 130 official files, and
-unbounded `make_set` in about 260, which is why both are hard checks in the lint script.
-Platform facts about lookback, ingestion time, required columns and function support were
-verified against Microsoft Learn.
+Somebody read about 5,000 hunting queries and detection rules across 24 public repositories,
+including Microsoft's own Azure-Sentinel repo, FalconForce's Falcon Friday, Cyb3r-Monk, ep3p,
+Bert-JanP, reprise99, HybridBrothers and SecurityAura. The good patterns went into the
+references. So did the bad ones, with counts. Bare `join` showed up in roughly 130 official
+files. Unbounded `make_set` in roughly 260. That's not a style preference, that's a hard error
+in the lint now. Platform facts were checked against Microsoft Learn, which is where they were
+the whole time.
 
-## Does it help
+## Does it work
 
-In a five-task evaluation, each task run with the updated skill, the original skill and no skill
-and graded blind against the same assertions, the updated skill passed 100% of assertions, the
-original 92% and no skill 77%. The no-skill runs lost points on exactly the facts the skill
-encodes: lookback semantics, ingestion-time windows, the alert cap, sensor sampling and
-inline indicator lists. The cost is roughly 75% more tokens than an unassisted run, mostly from
-reading references and running the lint and harness. One task, reviewing a deliberately flawed
-query, did not separate the configurations at all; the base model already does that well.
+Five tasks, each run three ways: updated skill, original skill, no skill. Graded blind. Updated
+skill passed 100% of the assertions, the original 92%, no skill 77%. The no-skill runs lost
+points on exactly the stuff the skill encodes: lookback semantics, ingestion-time windows, the
+alert cap, sensor sampling, indicators retyped inline. It costs about 75% more tokens than
+winging it, because reading things costs tokens. One task didn't separate anybody: reviewing a
+deliberately broken query. Turns out the model is already good at pointing at other people's
+mistakes. Most of us are.
 
-## Limits
+## What it won't do
 
-The lint is regex-based, not a parser; it is a cheap first gate, not a substitute for an offline
-Kusto parse or a tenant run. Example thresholds are placeholders. The skill does not execute
-queries or deploy anything; it writes rules, documents and tests for a human to validate.
+The lint is regex, not a parser. It's a smoke detector, not a fire marshal. The example
+thresholds are placeholders; your tenant is not the example. And it doesn't run queries or
+deploy anything. It writes the rule, the tests and the document, and then a human has to do
+the part where they find out if it's true.
